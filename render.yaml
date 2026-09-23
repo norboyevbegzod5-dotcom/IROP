@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: irop-rop-bot
+    runtime: python
+    plan: starter
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_CHAT_ID
+        sync: false
+      - key: TIMEZONE
+        value: Asia/Tashkent
+      - key: BOT_NAME
+        value: Шеф
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: DATA_DIR
+        value: /var/data
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+    disk:
+      name: irop-data
+      mountPath: /var/data
+      sizeGB: 1

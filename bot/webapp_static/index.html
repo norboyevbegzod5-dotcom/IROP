@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>РОП</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --text: var(--tg-theme-text-color, #111111);
+    --hint: var(--tg-theme-hint-color, #888888);
+    --link: var(--tg-theme-link-color, #2481cc);
+    --button: var(--tg-theme-button-color, #2481cc);
+    --button-text: var(--tg-theme-button-text-color, #ffffff);
+    --bubble-bot: var(--tg-theme-secondary-bg-color, #f0f0f0);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+  }
+  #header {
+    padding: 12px 16px;
+    font-weight: 600;
+    border-bottom: 1px solid rgba(128,128,128,0.2);
+  }
+  #chat {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .bubble {
+    max-width: 82%;
+    padding: 10px 14px;
+    border-radius: 16px;
+    line-height: 1.35;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-size: 15px;
+  }
+  .bot {
+    align-self: flex-start;
+    background: var(--bubble-bot);
+    color: var(--text);
+    border-bottom-left-radius: 4px;
+  }
+  .employee {
+    align-self: flex-end;
+    background: var(--button);
+    color: var(--button-text);
+    border-bottom-right-radius: 4px;
+  }
+  #actions {
+    padding: 8px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .action-btn {
+    padding: 12px;
+    border: none;
+    border-radius: 12px;
+    background: var(--button);
+    color: var(--button-text);
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  #inputbar {
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    border-top: 1px solid rgba(128,128,128,0.2);
+  }
+  #textInput {
+    flex: 1;
+    padding: 10px 14px;
+    border-radius: 20px;
+    border: 1px solid rgba(128,128,128,0.3);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;
+    outline: none;
+  }
+  #sendBtn {
+    border: none;
+    border-radius: 20px;
+    padding: 0 18px;
+    background: var(--button);
+    color: var(--button-text);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  #status {
+    text-align: center;
+    color: var(--hint);
+    font-size: 13px;
+    padding: 20px;
+  }
+</style>
+</head>
+<body>
+  <div id="header">РОП — рабочий чат</div>
+  <div id="chat"></div>
+  <div id="actions"></div>
+  <div id="inputbar" style="display:none;">
+    <input id="textInput" type="text" placeholder="Напиши сообщение..." />
+    <button id="sendBtn">➤</button>
+  </div>
+
+<script>
+const tg = window.Telegram ? window.Telegram.WebApp : null;
+if (tg) { tg.ready(); tg.expand(); }
+
+const initData = tg ? tg.initData : "";
+const chatEl = document.getElementById("chat");
+const actionsEl = document.getElementById("actions");
+const inputbarEl = document.getElementById("inputbar");
+const textInput = document.getElementById("textInput");
+const sendBtn = document.getElementById("sendBtn");
+
+function addBubble(sender, text) {
+  const div = document.createElement("div");
+  div.className = "bubble " + (sender === "employee" ? "employee" : "bot");
+  div.textContent = text;
+  chatEl.appendChild(div);
+  chatEl.scrollTop = chatEl.scrollHeight;
+}
+
+function renderActions(pendingAction, awaitingAnswer) {
+  actionsEl.innerHTML = "";
+  if (awaitingAnswer) {
+    inputbarEl.style.display = "flex";
+    return;
+  }
+  if (pendingAction === "start_standup") {
+    inputbarEl.style.display = "none";
+    const btn = document.createElement("button");
+    btn.className = "action-btn";
+    btn.textContent = "🚀 Начать рабочий день";
+    btn.onclick = () => callStart();
+    actionsEl.appendChild(btn);
+  } else if (pendingAction === "start_evening") {
+    inputbarEl.style.display = "flex";
+    const btn = document.createElement("button");
+    btn.className = "action-btn";
+    btn.textContent = "🌙 Подвести итоги дня";
+    btn.onclick = () => callStart();
+    actionsEl.appendChild(btn);
+  } else {
+    inputbarEl.style.display = "flex";
+  }
+}
+
+async function api(path, body) {
+  const resp = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(Object.assign({ initData }, body || {})),
+  });
+  return resp.json();
+}
+
+async function loadState() {
+  const data = await api("/api/state");
+  if (data.error) {
+    const div = document.createElement("div");
+    div.id = "status";
+    div.textContent =
+      data.error === "not_registered"
+        ? "Сначала напиши боту /start в обычном чате и выбери своё имя."
+        : "Не удалось загрузить чат. Попробуй переоткрыть приложение.";
+    chatEl.innerHTML = "";
+    chatEl.appendChild(div);
+    return;
+  }
+  chatEl.innerHTML = "";
+  data.messages.forEach((m) => addBubble(m.sender, m.text));
+  renderActions(data.pending_action, data.awaiting_answer);
+}
+
+async function callStart() {
+  const data = await api("/api/start");
+  if (data.error) { await loadState(); return; }
+  await loadState();
+}
+
+async function sendMessage() {
+  const text = textInput.value.trim();
+  if (!text) return;
+  addBubble("employee", text);
+  textInput.value = "";
+  const data = await api("/api/message", { text });
+  if (!data.error) {
+    await loadState();
+  }
+}
+
+sendBtn.onclick = sendMessage;
+textInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") sendMessage();
+});
+
+loadState();
+</script>
+</body>
+</html>

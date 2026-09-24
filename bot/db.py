@@ -285,12 +285,16 @@ def mark_reminded(instance_id: int):
         conn.execute("UPDATE task_instances SET reminded = 1 WHERE id = ?", (instance_id,))
 
 
-def get_newly_overdue(now_iso: str):
+def get_newly_overdue(now_iso: str, auto_cutoff_iso: str):
+    """auto_cutoff_iso — для задач из чата (source='auto') просрочка считается позже,
+    с запасом после срока: сотрудник обычно отчитывается уже после звонка."""
     with get_conn() as conn:
         return conn.execute(
             """SELECT * FROM task_instances
-               WHERE status = 'pending' AND deadline_at <= ?""",
-            (now_iso,),
+               WHERE status = 'pending'
+                 AND ((source != 'auto' AND deadline_at <= ?)
+                      OR (source = 'auto' AND deadline_at <= ?))""",
+            (now_iso, auto_cutoff_iso),
         ).fetchall()
 
 
@@ -319,12 +323,12 @@ _OPEN_STATUSES = ("pending", "accepted", "overdue")
 
 def get_open_tasks(employee_key: str, today_str: str):
     """Незакрытые задачи сотрудника, которые AI может закрыть по тексту: все задачи
-    от руководителя + сегодняшние задачи по шаблонам."""
+    от руководителя и поставленные AI + сегодняшние задачи по шаблонам."""
     with get_conn() as conn:
         return conn.execute(
             """SELECT * FROM task_instances
                WHERE employee_key = ? AND status IN ('pending', 'accepted', 'overdue')
-                 AND (source = 'manual' OR task_date = ?)
+                 AND (source IN ('manual', 'auto') OR task_date = ?)
                ORDER BY deadline_at""",
             (employee_key, today_str),
         ).fetchall()
@@ -412,17 +416,38 @@ def cancel_task(instance_id: int) -> bool:
         return True
 
 
-def get_manual_tasks(employee_key: str, since_date: str):
-    """Задачи от руководителя (source='manual') сотрудника, поставленные с since_date,
-    кроме отменённых — для раздела «Задачи» мини-аппа."""
+def get_employee_tasks(employee_key: str, since_date: str):
+    """Задачи от руководителя (source='manual') и поставленные AI по чату (source='auto')
+    с since_date, кроме отменённых — для раздела «Задачи» мини-аппа."""
     with get_conn() as conn:
         return conn.execute(
             """SELECT * FROM task_instances
-               WHERE employee_key = ? AND source = 'manual' AND status != 'cancelled'
-                 AND task_date >= ?
+               WHERE employee_key = ? AND source IN ('manual', 'auto')
+                 AND status != 'cancelled' AND task_date >= ?
                ORDER BY deadline_at""",
             (employee_key, since_date),
         ).fetchall()
+
+
+def create_auto_task(employee_key: str, title: str, description: str, remind_at, deadline_at) -> int:
+    """Задача, которую AI поставил по сообщению сотрудника. reminded=0 — обычная джоба
+    напоминаний пришлёт её в remind_at с кнопкой «Выполнено»."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO task_instances
+               (template_id, employee_key, task_date, title, description,
+                remind_at, deadline_at, status, reminded, source)
+               VALUES (NULL, ?, ?, ?, ?, ?, ?, 'pending', 0, 'auto')""",
+            (
+                employee_key,
+                deadline_at.date().isoformat(),
+                title,
+                description,
+                remind_at.isoformat(timespec="seconds"),
+                deadline_at.isoformat(timespec="seconds"),
+            ),
+        )
+        return cur.lastrowid
 
 
 def get_instance(instance_id: int):

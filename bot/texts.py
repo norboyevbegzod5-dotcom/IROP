@@ -122,6 +122,25 @@ def ai_error() -> str:
     return "Не смог обработать через AI. Проверь OPENAI_API_KEY или переформулируй задачу."
 
 
+def auto_task_reminder(title: str, description: str, due_hhmm: str) -> str:
+    text = f"⏰ Напоминаю: {title} — в {due_hhmm}"
+    if description:
+        text += f"\n{description}"
+    text += "\nКогда сделаешь — напиши в чат, как прошло, или отметь кнопкой."
+    return text
+
+
+def auto_task_created_employee(title: str, due: str, remind: str) -> str:
+    return f"📅 Поставил задачу: {title} — {due}. Напомню {remind}."
+
+
+def auto_task_created_admin(full_name: str, title: str, due: str, evidence: str) -> str:
+    text = f"📅 AI поставил задачу {full_name}: «{title}» — {due}"
+    if evidence:
+        text += f"\nПо сообщению: «{evidence}»"
+    return text
+
+
 def task_autoclosed_employee(title: str) -> str:
     return f"✅ Закрыл задачу «{title}» — по твоему сообщению. Если рано — скажи руководителю."
 

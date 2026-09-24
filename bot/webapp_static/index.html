@@ -419,6 +419,7 @@ const STATUS_LABELS = {
   pending: "⏳ Ждёт принятия",
   overdue: "🔴 Просрочена",
   accepted: "🖐 В работе",
+  scheduled: "📅 Запланировано",
 };
 
 function formatLeft(ms) {
@@ -463,7 +464,8 @@ function taskCard(t, loadedAt) {
 
   const title = document.createElement("div");
   title.className = "task-title";
-  title.textContent = t.title;
+  title.textContent = (t.auto ? "🤖 " : "") + t.title;
+  if (t.auto) title.title = "AI поставил задачу по твоему сообщению в чате";
   card.appendChild(title);
 
   if (t.description && t.description !== t.title) {
@@ -497,7 +499,7 @@ function taskCard(t, loadedAt) {
     card.appendChild(note);
   }
 
-  if (t.status === "pending" || t.status === "overdue") {
+  if (!t.auto && (t.status === "pending" || t.status === "overdue")) {
     const btn = document.createElement("button");
     btn.className = "action-btn";
     btn.textContent = "🖐 Принять";

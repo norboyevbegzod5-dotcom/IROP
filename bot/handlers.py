@@ -7,7 +7,17 @@ from telegram.error import BadRequest, Forbidden
 from telegram.ext import ContextTypes
 
 from bot import ai, checkins, db, styles, texts
-from bot.config import ADMIN_CHAT_ID, BOT_NAME, EMPLOYEES, MAX_VOICE_SECONDS, WEBAPP_URL
+from bot.config import (
+    ADMIN_CHAT_ID,
+    AUTO_TASK_DEFAULT_DEADLINE,
+    AUTO_TASK_DEFAULT_REMIND,
+    AUTO_TASK_MAX_DAYS_AHEAD,
+    AUTO_TASK_REMIND_BEFORE_MINUTES,
+    BOT_NAME,
+    EMPLOYEES,
+    MAX_VOICE_SECONDS,
+    WEBAPP_URL,
+)
 
 _EMPLOYEE_KEYS = {e.key for e in EMPLOYEES}
 
@@ -382,40 +392,90 @@ async def _answer_employee(bot, employee, text: str) -> str:
     return reply
 
 
-async def auto_close_tasks(bot, employee, text: str) -> list:
-    """AI закрывает задачи, о выполнении которых сотрудник сообщил в тексте.
-    Возвращает уведомления для сотрудника; руководителю уходит сообщение с цитатой
-    и кнопкой «Вернуть в работу» на случай ошибки AI."""
+async def _notify_admin(bot, text: str, keyboard=None):
+    if ADMIN_CHAT_ID is None:
+        return
+    try:
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, reply_markup=keyboard)
+    except (Forbidden, BadRequest):
+        pass
+
+
+def _auto_task_schedule(item, now: datetime):
+    """(remind_at, deadline_at, текст срока, текст напоминания) для задачи из чата;
+    None, если дата/время не разобрались или срок уже прошёл."""
+    try:
+        due_day = date.fromisoformat(item["due_date"])
+        due_time = item.get("due_time")
+        hh, mm = (int(x) for x in (due_time or AUTO_TASK_DEFAULT_DEADLINE).split(":"))
+        deadline_at = datetime.combine(due_day, datetime.min.time()).replace(hour=hh, minute=mm)
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+    if deadline_at <= now or deadline_at > now + timedelta(days=AUTO_TASK_MAX_DAYS_AHEAD):
+        return None
+
+    if due_time:
+        remind_at = deadline_at - timedelta(minutes=AUTO_TASK_REMIND_BEFORE_MINUTES)
+        due_text = f"{deadline_at:%d.%m} в {deadline_at:%H:%M}"
+        remind_text = f"за {AUTO_TASK_REMIND_BEFORE_MINUTES} минут"
+    else:
+        hh, mm = (int(x) for x in AUTO_TASK_DEFAULT_REMIND.split(":"))
+        remind_at = deadline_at.replace(hour=hh, minute=mm)
+        due_text = f"{deadline_at:%d.%m}, до конца дня"
+        remind_text = f"{remind_at:%d.%m} в {remind_at:%H:%M}"
+    if remind_at <= now:
+        remind_at = now  # срок совсем скоро — напомним сразу при следующей проверке
+        remind_text = "сразу"
+    return remind_at, deadline_at, due_text, remind_text
+
+
+async def process_tasks(bot, employee, text: str) -> list:
+    """AI по сообщению сотрудника: закрывает выполненные задачи и ставит новые с
+    конкретным сроком («Evos сказал перезвонить через 2 дня в 18:00»). Возвращает
+    уведомления для сотрудника; руководителю уходят уведомления с кнопками отмены."""
     today_str = date.today().isoformat()
+    now = datetime.now()
     open_tasks = db.get_open_tasks(employee["key"], today_str)
-    if not open_tasks:
-        return []
 
     # Контекст — несколько сообщений до текущего (само текущее уже записано последним).
     history = db.get_messages_for_day(employee["key"], today_str)[-7:-1]
-    found = await asyncio.to_thread(ai.detect_completed_tasks, text, history, open_tasks)
+    result = await asyncio.to_thread(ai.analyze_tasks, text, history, open_tasks, now)
     by_id = {t["id"]: t for t in open_tasks}
 
     notices = []
-    for item in found:
+    for item in result["new_tasks"]:
+        schedule = _auto_task_schedule(item, now)
+        if schedule is None:
+            continue
+        remind_at, deadline_at, due_text, remind_text = schedule
+        title = item["title"][:120]
+        task_id = db.create_auto_task(
+            employee["key"], title, item.get("description") or "", remind_at, deadline_at
+        )
+        notices.append(texts.auto_task_created_employee(title, due_text, remind_text))
+        await _notify_admin(
+            bot,
+            texts.auto_task_created_admin(
+                employee["full_name"], title, due_text, item.get("evidence", "")
+            ),
+            InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🚫 Отменить", callback_data=f"cancel:{task_id}")]]
+            ),
+        )
+
+    for item in result["completed"]:
         task = by_id[item["task_id"]]
         if not db.close_task_by_ai(task["id"], employee["key"], item["evidence"]):
             continue
         notices.append(texts.task_autoclosed_employee(task["title"]))
-        if ADMIN_CHAT_ID is not None:
-            keyboard = InlineKeyboardMarkup(
+        await _notify_admin(
+            bot,
+            texts.task_autoclosed_admin(employee["full_name"], task["title"], item["evidence"]),
+            InlineKeyboardMarkup(
                 [[InlineKeyboardButton("↩️ Вернуть в работу", callback_data=f"reopen:{task['id']}")]]
-            )
-            try:
-                await bot.send_message(
-                    chat_id=ADMIN_CHAT_ID,
-                    text=texts.task_autoclosed_admin(
-                        employee["full_name"], task["title"], item["evidence"]
-                    ),
-                    reply_markup=keyboard,
-                )
-            except (Forbidden, BadRequest):
-                pass
+            ),
+        )
     return notices
 
 
@@ -429,7 +489,7 @@ async def employee_message(bot, employee, text: str) -> list:
 
     # Ответ и проверка задач — параллельно, чтобы не удваивать ожидание.
     reply, notices = await asyncio.gather(
-        _answer_employee(bot, employee, text), auto_close_tasks(bot, employee, text)
+        _answer_employee(bot, employee, text), process_tasks(bot, employee, text)
     )
     for notice in notices:
         db.log_message(employee["key"], today_str, "bot", notice)

@@ -104,6 +104,100 @@ def employee_reply(full_name: str, history, tasks):
     return (resp.choices[0].message.content or "").strip() or None
 
 
+_CHECKIN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "checkin_step",
+        "description": "Следующий шаг чек-ина: задать вопрос или завершить с отчётом.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": (
+                        "Сообщение сотруднику: следующий вопрос, либо короткое "
+                        "завершение, если finished=true"
+                    ),
+                },
+                "finished": {
+                    "type": "boolean",
+                    "description": "true — всё нужное выяснено, чек-ин окончен",
+                },
+                "report": {
+                    "type": "string",
+                    "description": (
+                        "Только при finished=true: отчёт для руководителя — сжато, по "
+                        "пунктам, с цифрами и именами клиентов из ответов. Без выдумок; "
+                        "если что-то сотрудник не сообщил — так и написать."
+                    ),
+                },
+            },
+            "required": ["message", "finished"],
+        },
+    },
+}
+
+
+def _checkin_system_prompt(full_name, title, goal, context, must_finish) -> str:
+    tasks = context.get("tasks") or []
+    task_lines = "\n".join(f"- {t['title']} (статус: {t['status']})" for t in tasks) or "- нет"
+    previous = context.get("previous_report") or "нет"
+    prompt = (
+        f"Ты — {BOT_NAME}, РОП (руководитель отдела продаж). Ты проводишь «{title}» с "
+        f"сотрудником {full_name} в чате.\n\n"
+        f"Цель разговора: {goal}\n\n"
+        "Правила:\n"
+        "- Задавай ровно один вопрос за сообщение, коротко и живо, по-русски, на «ты».\n"
+        "- Каждый следующий вопрос строй из предыдущих ответов: уточняй расплывчатое "
+        "(«несколько» — сколько? «клиент» — какой?), не спрашивай то, что уже сказано.\n"
+        "- Если сотрудник сам ответил на несколько пунктов сразу — не переспрашивай их.\n"
+        "- Первое сообщение начни с короткого приветствия и сразу первого вопроса.\n"
+        "- Когда всё из цели выяснено — finished=true, коротко поблагодари и заполни report.\n"
+        "- Не давай оценок и советов посреди опроса, просто собирай информацию.\n\n"
+        f"Предыдущий отчёт сотрудника:\n{previous}\n\n"
+        f"Задачи сотрудника на сегодня:\n{task_lines}"
+    )
+    if must_finish:
+        prompt += "\n\nВопросов уже достаточно: завершай сейчас (finished=true) с отчётом."
+    return prompt
+
+
+def checkin_step(full_name, title, goal, turns, context, must_finish):
+    """Следующий шаг чек-ина от AI: {"message", "finished", "report"}. turns — диалог
+    сессии (sender, text); пустой список — нужно первое сообщение. None при ошибке."""
+    if not OPENAI_API_KEY:
+        return None
+
+    messages = [
+        {
+            "role": "system",
+            "content": _checkin_system_prompt(full_name, title, goal, context, must_finish),
+        }
+    ]
+    for t in turns:
+        role = "user" if t["sender"] == "employee" else "assistant"
+        messages.append({"role": role, "content": t["text"]})
+    if not turns:
+        messages.append({"role": "user", "content": "(сотрудник открыл чат, начинай)"})
+
+    try:
+        resp = _get_client().chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=messages,
+            tools=[_CHECKIN_TOOL],
+            tool_choice={"type": "function", "function": {"name": "checkin_step"}},
+        )
+        call = resp.choices[0].message.tool_calls[0]
+        step = json.loads(call.function.arguments)
+    except Exception:
+        return None
+
+    if not isinstance(step, dict) or not (step.get("message") or "").strip():
+        return None
+    step["finished"] = bool(step.get("finished"))
+    return step
+
+
 def parse_task(admin_text: str):
     if not OPENAI_API_KEY:
         return None

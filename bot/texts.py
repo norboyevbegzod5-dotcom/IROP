@@ -138,14 +138,6 @@ def task_already_uncancellable() -> str:
     return "Эту задачу уже нельзя отменить (выполнена или уже отменена)."
 
 
-def checkin_start(title: str, question: str) -> str:
-    return f"🌅 {title}\n\n{question}"
-
-
-def checkin_thanks() -> str:
-    return "Спасибо, принято ✅"
-
-
 def checkin_overdue_employee(title: str) -> str:
     return f"🔴 Не закончил «{title}» — ответь на вопрос, чтобы продолжить."
 

@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS checkin_sessions (
     deadline_at TEXT NOT NULL,
     nagged INTEGER NOT NULL DEFAULT 0,
     completed_at TEXT,
+    report TEXT,
     UNIQUE(employee_key, session_date, kind)
 );
 
@@ -109,6 +110,7 @@ def init_db():
     with get_conn() as conn:
         conn.executescript(_SCHEMA)
         _migrate_task_instances(conn)
+        _migrate_checkin_sessions(conn)
         _seed_employees(conn)
         _seed_templates(conn)
         _retire_old_templates(conn)
@@ -137,6 +139,12 @@ def _migrate_task_instances(conn):
            FROM task_instances_old"""
     )
     conn.execute("DROP TABLE task_instances_old")
+
+
+def _migrate_checkin_sessions(conn):
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(checkin_sessions)").fetchall()}
+    if "report" not in cols:
+        conn.execute("ALTER TABLE checkin_sessions ADD COLUMN report TEXT")
 
 
 def _seed_employees(conn):
@@ -392,30 +400,44 @@ def get_active_session(employee_key: str, kind: str = None):
         ).fetchone()
 
 
-def record_answer(session_id: int, answer: str):
+def append_checkin_turn(session_id: int, sender: str, text: str) -> list:
+    """Добавляет реплику в диалог сессии (answers — JSON-список {sender, text})
+    и возвращает весь диалог."""
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM checkin_sessions WHERE id = ?", (session_id,)).fetchone()
         if row is None:
-            return None
-        answers = json.loads(row["answers"])
-        answers.append(answer)
-        new_index = row["question_index"] + 1
+            return []
+        turns = [
+            t if isinstance(t, dict) else {"sender": "employee", "text": t}
+            for t in json.loads(row["answers"])
+        ]
+        turns.append({"sender": sender, "text": text})
         conn.execute(
             "UPDATE checkin_sessions SET answers = ?, question_index = ? WHERE id = ?",
-            (json.dumps(answers, ensure_ascii=False), new_index, session_id),
+            (json.dumps(turns, ensure_ascii=False), len(turns), session_id),
         )
-        result = dict(row)
-        result["answers"] = answers
-        result["question_index"] = new_index
-        return result
+        return turns
 
 
-def complete_session(session_id: int):
+def complete_session(session_id: int, report: str = None):
     with get_conn() as conn:
         conn.execute(
-            "UPDATE checkin_sessions SET status = 'completed', completed_at = ? WHERE id = ?",
-            (datetime.now().isoformat(timespec="seconds"), session_id),
+            """UPDATE checkin_sessions SET status = 'completed', completed_at = ?, report = ?
+               WHERE id = ?""",
+            (datetime.now().isoformat(timespec="seconds"), report, session_id),
         )
+
+
+def get_previous_report(employee_key: str, session_id: int):
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT report FROM checkin_sessions
+               WHERE employee_key = ? AND id < ? AND status = 'completed'
+                 AND report IS NOT NULL
+               ORDER BY id DESC LIMIT 1""",
+            (employee_key, session_id),
+        ).fetchone()
+        return row["report"] if row else None
 
 
 def get_overdue_checkins(now_iso: str):

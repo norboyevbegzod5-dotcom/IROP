@@ -320,25 +320,11 @@ async def employee_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
 
-    updated = db.record_answer(session["id"], text)
-    if updated is None:
-        return
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    reply, report = await checkins.handle_answer(session, employee, text)
+    await update.message.reply_text(reply)
 
-    kind = session["kind"]
-    questions = checkins.QUESTIONS[kind]
-
-    if updated["question_index"] < len(questions):
-        next_question = questions[updated["question_index"]]
-        await update.message.reply_text(next_question)
-        return
-
-    db.complete_session(session["id"])
-    report = checkins.build_report(
-        employee["full_name"], kind, session["session_date"], updated["answers"]
-    )
-    await update.message.reply_text(texts.checkin_thanks())
-
-    if ADMIN_CHAT_ID is not None:
+    if report is not None and ADMIN_CHAT_ID is not None:
         try:
             await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=report)
         except (Forbidden, BadRequest):

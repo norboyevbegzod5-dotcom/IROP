@@ -161,8 +161,37 @@
     font-weight: 600;
     cursor: pointer;
   }
-  #micBtn { padding: 0 14px; background: var(--bubble-bot); }
-  #micBtn.recording { background: #e53935; color: #fff; }
+  #micBtn {
+    padding: 0 14px;
+    background: var(--bubble-bot);
+    touch-action: none;          /* жест свайпа обрабатываем сами, без прокрутки */
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+  #micBtn.recording { background: #e53935; color: #fff; transform-origin: center; }
+  #recordOverlay {
+    display: none;
+    flex: 1;
+    align-items: center;
+    gap: 10px;
+    padding: 0 6px;
+    overflow: hidden;
+    font-size: 15px;
+  }
+  #inputbar.is-recording #recordOverlay { display: flex; }
+  #inputbar.is-recording #textInput,
+  #inputbar.is-recording #sendBtn { display: none; }
+  .rec-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #e53935;
+    animation: rec-blink 1s infinite;
+  }
+  @keyframes rec-blink { 50% { opacity: 0.2; } }
+  #recordTime { font-variant-numeric: tabular-nums; min-width: 40px; }
+  #recordHint { margin-left: auto; color: var(--hint); white-space: nowrap; }
   #sendBtn:disabled, #micBtn:disabled { opacity: 0.5; }
   #status {
     text-align: center;
@@ -183,7 +212,12 @@
     <div id="actions"></div>
     <div id="inputbar" style="display:none;">
       <input id="textInput" type="text" placeholder="Напиши сообщение..." />
-      <button id="micBtn" title="Голосовое сообщение">🎤</button>
+      <div id="recordOverlay">
+        <span class="rec-dot"></span>
+        <span id="recordTime">0:00</span>
+        <span id="recordHint">‹ Влево — отмена</span>
+      </div>
+      <button id="micBtn" title="Удерживай, чтобы записать голосовое">🎤</button>
       <button id="sendBtn">➤</button>
     </div>
   </section>
@@ -309,15 +343,50 @@ function notify(text) {
 
 // ---------- голосовые ----------
 const micBtn = document.getElementById("micBtn");
+// Как в Telegram: удерживай 🎤 — идёт запись, отпустил — отправлено,
+// свайп влево дальше CANCEL_SWIPE_PX — запись отменена.
+const recordOverlay = document.getElementById("recordOverlay");
+const recordTimeEl = document.getElementById("recordTime");
+const recordHintEl = document.getElementById("recordHint");
+const MAX_RECORD_SECONDS = 300;
+const CANCEL_SWIPE_PX = 110;
+const MIN_RECORD_MS = 500;   // короче — считаем случайным касанием
+
 let recorder = null;
 let recordChunks = [];
 let recordTimer = null;
-const MAX_RECORD_SECONDS = 300;
+let recordStartedAt = 0;
+let discardRecording = false;
+// Жест: pressing — палец на кнопке; startX — откуда начали; starting — ждём микрофон.
+const gesture = { pressing: false, starting: false, startX: 0, pointerId: null };
 
 function pickMimeType() {
   const types = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
   if (!window.MediaRecorder) return null;
   return types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
+}
+
+function haptic(kind) {
+  if (!tg || !tg.HapticFeedback) return;
+  if (kind === "impact") tg.HapticFeedback.impactOccurred("medium");
+  else tg.HapticFeedback.notificationOccurred(kind);
+}
+
+function setVerticalSwipes(enabled) {
+  // Чтобы свайп по экрану во время записи не сворачивал мини-апп (Bot API 7.7+).
+  if (!tg) return;
+  if (enabled && tg.enableVerticalSwipes) tg.enableVerticalSwipes();
+  if (!enabled && tg.disableVerticalSwipes) tg.disableVerticalSwipes();
+}
+
+function showRecordingUi(on) {
+  inputbarEl.classList.toggle("is-recording", on);
+  micBtn.classList.toggle("recording", on);
+  micBtn.style.transform = "";
+  recordHintEl.style.transform = "";
+  recordHintEl.style.opacity = "";
+  recordTimeEl.textContent = "0:00";
+  setVerticalSwipes(!on);
 }
 
 async function startRecording() {
@@ -326,41 +395,103 @@ async function startRecording() {
     notify("Запись голоса здесь недоступна — отправь голосовое прямо в чат с ботом.");
     return;
   }
+  gesture.starting = true;
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) {
+    gesture.starting = false;
     notify("Нет доступа к микрофону. Разреши его или отправь голосовое в чат с ботом.");
     return;
   }
+  gesture.starting = false;
+
+  // Пока ждали разрешение на микрофон, палец уже отпустили (обычно при первом запуске).
+  if (!gesture.pressing) {
+    stream.getTracks().forEach((t) => t.stop());
+    notify("Микрофон готов. Удерживай 🎤, пока говоришь, и отпусти, чтобы отправить.");
+    return;
+  }
+
   recordChunks = [];
+  discardRecording = false;
   recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
   recorder.ondataavailable = (e) => { if (e.data.size) recordChunks.push(e.data); };
   recorder.onstop = () => {
     stream.getTracks().forEach((t) => t.stop());
     const blob = new Blob(recordChunks, { type: recorder.mimeType || "audio/webm" });
     recorder = null;
-    sendVoice(blob);
+    if (!discardRecording) sendVoice(blob);
   };
   recorder.start();
+  recordStartedAt = Date.now();
+  haptic("impact");
 
-  let seconds = 0;
-  micBtn.classList.add("recording");
-  micBtn.textContent = "⏹ 0:00";
-  sendBtn.disabled = true;
+  showRecordingUi(true);
   recordTimer = setInterval(() => {
-    seconds += 1;
-    micBtn.textContent = `⏹ ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-    if (seconds >= MAX_RECORD_SECONDS) stopRecording();
-  }, 1000);
+    const seconds = Math.floor((Date.now() - recordStartedAt) / 1000);
+    recordTimeEl.textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+    if (seconds >= MAX_RECORD_SECONDS) finishRecording(true);
+  }, 250);
 }
 
-function stopRecording() {
+// send=true — отправить запись, false — выбросить (свайп влево или слишком коротко).
+function finishRecording(send) {
   clearInterval(recordTimer);
-  micBtn.classList.remove("recording");
-  micBtn.textContent = "🎤";
-  if (recorder && recorder.state !== "inactive") recorder.stop();
+  gesture.pressing = false;
+  showRecordingUi(false);
+  if (!recorder) return;
+  discardRecording = !send;
+  if (recorder.state !== "inactive") recorder.stop();
 }
+
+function cancelRecording() {
+  finishRecording(false);
+  haptic("warning");
+}
+
+micBtn.addEventListener("pointerdown", (e) => {
+  if (micBtn.disabled || recorder || gesture.starting) return;
+  e.preventDefault();
+  // Захват нужен, чтобы получать движения пальца за пределами кнопки при свайпе.
+  try { micBtn.setPointerCapture(e.pointerId); } catch (err) { /* запишем и без него */ }
+  gesture.pressing = true;
+  gesture.pointerId = e.pointerId;
+  gesture.startX = e.clientX;
+  startRecording();
+});
+
+micBtn.addEventListener("pointermove", (e) => {
+  if (!recorder || !gesture.pressing || e.pointerId !== gesture.pointerId) return;
+  const dx = Math.min(0, e.clientX - gesture.startX);
+  micBtn.style.transform = `translateX(${dx}px)`;
+  recordHintEl.style.transform = `translateX(${dx / 2}px)`;
+  recordHintEl.style.opacity = String(1 - Math.min(1, -dx / CANCEL_SWIPE_PX) * 0.7);
+  if (-dx >= CANCEL_SWIPE_PX) cancelRecording();
+});
+
+function onPointerEnd(e) {
+  if (e.pointerId !== gesture.pointerId) return;
+  if (!gesture.pressing) return;
+  gesture.pressing = false;
+  if (!recorder) {
+    // Отпустили до начала записи: либо просто тап, либо ещё ждём микрофон —
+    // во втором случае startRecording сам покажет подсказку.
+    if (!gesture.starting) notify("Удерживай 🎤, чтобы записать голосовое. Свайп влево — отмена.");
+    return;
+  }
+  if (e.type === "pointercancel") { cancelRecording(); return; }
+  if (Date.now() - recordStartedAt < MIN_RECORD_MS) {
+    cancelRecording();
+    notify("Слишком коротко — удерживай 🎤, пока говоришь.");
+    return;
+  }
+  finishRecording(true);
+}
+
+micBtn.addEventListener("pointerup", onPointerEnd);
+micBtn.addEventListener("pointercancel", onPointerEnd);
+micBtn.addEventListener("contextmenu", (e) => e.preventDefault());  // долгое нажатие на Android
 
 async function sendVoice(blob) {
   if (!blob.size) { setBusy(false); return; }
@@ -385,11 +516,6 @@ async function sendVoice(blob) {
     setBusy(false);
   }
 }
-
-micBtn.onclick = () => {
-  if (micBtn.disabled) return;
-  if (recorder) stopRecording(); else startRecording();
-};
 
 sendBtn.onclick = sendMessage;
 textInput.addEventListener("keydown", (e) => {

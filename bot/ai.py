@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 
 from openai import OpenAI
 
@@ -227,14 +228,48 @@ def checkin_step(full_name, title, goal, turns, context, must_finish):
     return step
 
 
-_CLOSE_TOOL = {
+_TASKS_TOOL = {
     "type": "function",
     "function": {
-        "name": "close_tasks",
-        "description": "Отметить задачи, которые сотрудник в последнем сообщении назвал выполненными.",
+        "name": "update_tasks",
+        "description": (
+            "По последнему сообщению сотрудника: какие открытые задачи он выполнил и какие "
+            "новые задачи с конкретным сроком из него следуют."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
+                "new_tasks": {
+                    "type": "array",
+                    "description": "Новые задачи; пустой массив, если таких нет",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {
+                                "type": "string",
+                                "description": "Коротко, начиная с глагола: «Перезвонить Evos»",
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Контекст: что сказал клиент и о чём говорить",
+                            },
+                            "due_date": {
+                                "type": "string",
+                                "description": "Дата выполнения, YYYY-MM-DD",
+                            },
+                            "due_time": {
+                                "type": ["string", "null"],
+                                "description": "Время HH:MM, если названо или однозначно следует "
+                                "из текста («утром» = 10:00, «после обеда» = 14:00), иначе null",
+                            },
+                            "evidence": {
+                                "type": "string",
+                                "description": "Короткая дословная цитата из сообщения сотрудника",
+                            },
+                        },
+                        "required": ["title", "description", "due_date", "due_time", "evidence"],
+                    },
+                },
                 "completed": {
                     "type": "array",
                     "description": "Выполненные задачи; пустой массив, если таких нет",
@@ -251,14 +286,24 @@ _CLOSE_TOOL = {
                     },
                 },
             },
-            "required": ["completed"],
+            "required": ["new_tasks", "completed"],
         },
     },
 }
 
-_CLOSE_PROMPT = (
-    "Ты следишь за задачами сотрудника отдела продаж. По его ПОСЛЕДНЕМУ сообщению определи, "
-    "какие из открытых задач он выполнил ПОЛНОСТЬЮ.\n\n"
+_TASKS_PROMPT = (
+    "Ты ведёшь задачи сотрудника отдела продаж. По его ПОСЛЕДНЕМУ сообщению сделай две вещи.\n\n"
+    "1) new_tasks — поставь задачу, если из сообщения следует конкретное действие "
+    "сотрудника с конкретным сроком: клиент попросил перезвонить/написать/прислать КП "
+    "к определённому времени, договорились о встрече, сотрудник сам обещает что-то к "
+    "определённому дню («Evos сказал перезвонить через 2 дня в 18:00» → «Перезвонить Evos», "
+    "дата = сегодня + 2 дня, 18:00).\n"
+    "- Относительные сроки («завтра», «через 2 дня», «в пятницу», «на следующей неделе» = "
+    "понедельник) считай от текущей даты и времени ниже. Срок должен быть в будущем.\n"
+    "- Без срока («надо бы позвонить», «как-нибудь») — задачу НЕ ставь.\n"
+    "- Не дублируй: если такая задача уже есть в открытых — не ставь снова.\n"
+    "- Уже сделанное («перезвонил», «отправил») — это не новая задача.\n\n"
+    "2) completed — какие из открытых задач он выполнил ПОЛНОСТЬЮ.\n"
     "Закрывай задачу, только если сотрудник прямо сообщает о свершившемся результате, "
     "который целиком покрывает задачу («отправил КП в Makro», «договор с Evos подписан», "
     "«отчёт скинул»).\n"
@@ -273,17 +318,23 @@ _CLOSE_PROMPT = (
 )
 
 
-def detect_completed_tasks(message: str, history, tasks) -> list:
-    """[{"task_id", "evidence"}] — задачи из tasks, которые сотрудник закрыл сообщением
-    message. history — предыдущие сообщения (sender, text) для контекста. [] при ошибке."""
-    if not OPENAI_API_KEY or not tasks:
-        return []
+_WEEKDAYS = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+
+
+def analyze_tasks(message: str, history, tasks, now: datetime) -> dict:
+    """{"completed": [{"task_id", "evidence"}], "new_tasks": [{"title", "description",
+    "due_date", "due_time", "evidence"}]} по последнему сообщению сотрудника.
+    tasks — его открытые задачи, history — предыдущие сообщения для контекста.
+    При ошибке — пустые списки."""
+    empty = {"completed": [], "new_tasks": []}
+    if not OPENAI_API_KEY:
+        return empty
 
     task_lines = "\n".join(
-        f"- task_id={t['id']}: {t['title']}"
+        f"- task_id={t['id']}: {t['title']} (срок {t['deadline_at'][:16].replace('T', ' ')})"
         + (f" — {t['description']}" if t["description"] and t["description"] != t["title"] else "")
         for t in tasks
-    )
+    ) or "— нет"
     context_lines = "\n".join(
         f"{'Сотрудник' if m['sender'] == 'employee' else 'РОП'}: {m['text']}" for m in history
     ) or "—"
@@ -292,29 +343,35 @@ def detect_completed_tasks(message: str, history, tasks) -> list:
         resp = _get_client().chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
-                {"role": "system", "content": _CLOSE_PROMPT},
+                {"role": "system", "content": _TASKS_PROMPT},
                 {
                     "role": "user",
                     "content": (
+                        f"Сейчас: {now:%Y-%m-%d %H:%M}, {_WEEKDAYS[now.weekday()]}.\n\n"
                         f"Открытые задачи:\n{task_lines}\n\n"
                         f"Предыдущие сообщения:\n{context_lines}\n\n"
                         f"ПОСЛЕДНЕЕ сообщение сотрудника:\n{message}"
                     ),
                 },
             ],
-            tools=[_CLOSE_TOOL],
-            tool_choice={"type": "function", "function": {"name": "close_tasks"}},
+            tools=[_TASKS_TOOL],
+            tool_choice={"type": "function", "function": {"name": "update_tasks"}},
         )
         args = json.loads(resp.choices[0].message.tool_calls[0].function.arguments)
     except Exception:
-        return []
+        return empty
 
     valid_ids = {t["id"] for t in tasks}
-    result = []
-    for item in args.get("completed") or []:
-        if isinstance(item, dict) and item.get("task_id") in valid_ids:
-            result.append({"task_id": item["task_id"], "evidence": str(item.get("evidence", ""))})
-    return result
+    completed = [
+        {"task_id": item["task_id"], "evidence": str(item.get("evidence", ""))}
+        for item in args.get("completed") or []
+        if isinstance(item, dict) and item.get("task_id") in valid_ids
+    ]
+    new_tasks = [
+        item for item in args.get("new_tasks") or []
+        if isinstance(item, dict) and item.get("title") and item.get("due_date")
+    ]
+    return {"completed": completed, "new_tasks": new_tasks}
 
 
 def parse_task(admin_text: str):

@@ -7,7 +7,7 @@ from aiohttp import web
 from telegram.error import BadRequest, Forbidden
 
 from bot import ai, checkins, db, handlers, texts
-from bot.config import ADMIN_CHAT_ID
+from bot.config import ADMIN_CHAT_ID, AUTO_TASK_OVERDUE_GRACE_HOURS
 from bot.telegram_auth import get_user, validate_init_data
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webapp_static")
@@ -112,14 +112,20 @@ _TASKS_HISTORY_DAYS = 14
 def _task_json(t, now: datetime) -> dict:
     deadline = datetime.fromisoformat(t["deadline_at"])
     status = t["status"]
-    if status == "pending" and deadline <= now:
+    auto = t["source"] == "auto"
+    # У задач из чата — запас после срока, как и в джобе просрочек.
+    overdue_at = deadline + timedelta(hours=AUTO_TASK_OVERDUE_GRACE_HOURS) if auto else deadline
+    if status == "pending" and overdue_at <= now:
         status = "overdue"  # джоба отметит чуть позже, но показываем уже сейчас
     active = status in ("pending", "overdue") or (status == "accepted" and deadline > now)
+    if auto and status == "pending":
+        status = "scheduled"  # задачу из чата принимать не нужно — она просто ждёт срока
     return {
         "id": t["id"],
         "title": t["title"],
         "description": t["description"] or "",
         "status": status,
+        "auto": auto,
         "active": active,
         "deadline": deadline.strftime("%d.%m %H:%M"),
         "closed_by_ai": t["closed_by"] == "ai",
@@ -138,16 +144,19 @@ async def handle_tasks(request: web.Request):
 
     now = datetime.now()
     since = (date.today() - timedelta(days=_TASKS_HISTORY_DAYS)).isoformat()
-    tasks = [_task_json(t, now) for t in db.get_manual_tasks(employee["key"], since)]
+    tasks = [_task_json(t, now) for t in db.get_employee_tasks(employee["key"], since)]
     active = [t for t in tasks if t["active"]]
     return web.json_response(
         {
             "tasks": active + [t for t in tasks if not t["active"]][::-1],
             "counts": {
                 "active": len(active),
-                "to_accept": sum(1 for t in active if t["status"] in ("pending", "overdue")),
+                "to_accept": sum(
+                    1 for t in active
+                    if not t["auto"] and t["status"] in ("pending", "overdue")
+                ),
                 "overdue": sum(1 for t in active if t["status"] == "overdue"),
-                "accepted": sum(1 for t in active if t["status"] == "accepted"),
+                "accepted": sum(1 for t in active if t["status"] in ("accepted", "scheduled")),
             },
         }
     )

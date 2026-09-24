@@ -5,7 +5,7 @@ from telegram.error import Forbidden, BadRequest
 from telegram.ext import ContextTypes
 
 from bot import checkins, db, texts
-from bot.config import ADMIN_CHAT_ID, EMPLOYEES, WEBAPP_URL
+from bot.config import ADMIN_CHAT_ID, AUTO_TASK_OVERDUE_GRACE_HOURS, EMPLOYEES, WEBAPP_URL
 
 
 def _now_iso() -> str:
@@ -25,9 +25,12 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
             continue
 
         deadline_hhmm = t["deadline_at"][11:16]
-        text = texts.task_reminder(
-            employee["full_name"], t["title"], t["description"], deadline_hhmm
-        )
+        if t["source"] == "auto":
+            text = texts.auto_task_reminder(t["title"], t["description"], deadline_hhmm)
+        else:
+            text = texts.task_reminder(
+                employee["full_name"], t["title"], t["description"], deadline_hhmm
+            )
         keyboard = InlineKeyboardMarkup(
             [[InlineKeyboardButton("✅ Выполнено", callback_data=f"done:{t['id']}")]]
         )
@@ -40,7 +43,8 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def check_deadlines(context: ContextTypes.DEFAULT_TYPE):
-    overdue = db.get_newly_overdue(_now_iso())
+    auto_cutoff = datetime.now() - timedelta(hours=AUTO_TASK_OVERDUE_GRACE_HOURS)
+    overdue = db.get_newly_overdue(_now_iso(), auto_cutoff.isoformat(timespec="seconds"))
     for t in overdue:
         db.mark_overdue(t["id"])
         employee = db.get_employee(t["employee_key"])

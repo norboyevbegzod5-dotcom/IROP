@@ -1,9 +1,18 @@
 import os
+import time
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Бот везде работает с «наивными» datetime.now()/date.today(). Переводим весь процесс в
+# часовой пояс компании: на Render сервер по умолчанию в UTC, и без этого «18:00»
+# в задачах и «сегодня» в отчётах сдвигались бы на 5 часов. (На Windows tzset нет —
+# локально используется часовой пояс машины.)
+os.environ["TZ"] = os.getenv("TIMEZONE", "Asia/Tashkent")
+if hasattr(time, "tzset"):
+    time.tzset()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
@@ -17,6 +26,16 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 # Модель распознавания голосовых сообщений сотрудников.
 OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
+# Задачи, которые AI ставит по чату сотрудника: напоминание за столько минут до срока
+# (если время названо; иначе — в AUTO_TASK_DEFAULT_REMIND утром того дня), срок без
+# времени — конец рабочего дня, и сколько часов после срока ждать отчёта, прежде чем
+# считать задачу просроченной.
+AUTO_TASK_REMIND_BEFORE_MINUTES = 15
+AUTO_TASK_DEFAULT_REMIND = "10:00"
+AUTO_TASK_DEFAULT_DEADLINE = "19:00"
+AUTO_TASK_OVERDUE_GRACE_HOURS = 2
+# Дальше этого срока AI задачи не ставит (защита от ошибок в дате).
+AUTO_TASK_MAX_DAYS_AHEAD = 90
 # Голосовые длиннее этого не распознаём (секунды).
 MAX_VOICE_SECONDS = 300
 

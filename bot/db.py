@@ -315,7 +315,8 @@ def mark_accepted(instance_id: int, employee_key: str) -> bool:
             "SELECT * FROM task_instances WHERE id = ? AND employee_key = ?",
             (instance_id, employee_key),
         ).fetchone()
-        if row is None or row["status"] != "pending":
+        # Просроченную задачу тоже можно принять — с опозданием.
+        if row is None or row["status"] not in ("pending", "overdue"):
             return False
         conn.execute(
             "UPDATE task_instances SET status = 'accepted', completed_at = ? WHERE id = ?",
@@ -331,6 +332,19 @@ def cancel_task(instance_id: int) -> bool:
             return False
         conn.execute("UPDATE task_instances SET status = 'cancelled' WHERE id = ?", (instance_id,))
         return True
+
+
+def get_manual_tasks(employee_key: str, since_date: str):
+    """Задачи от руководителя (source='manual') сотрудника, поставленные с since_date,
+    кроме отменённых — для раздела «Задачи» мини-аппа."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM task_instances
+               WHERE employee_key = ? AND source = 'manual' AND status != 'cancelled'
+                 AND task_date >= ?
+               ORDER BY deadline_at""",
+            (employee_key, since_date),
+        ).fetchall()
 
 
 def get_instance(instance_id: int):

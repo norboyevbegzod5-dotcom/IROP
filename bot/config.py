@@ -15,6 +15,10 @@ BOT_NAME = os.getenv("BOT_NAME", "Шеф")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# Модель распознавания голосовых сообщений сотрудников.
+OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
+# Голосовые длиннее этого не распознаём (секунды).
+MAX_VOICE_SECONDS = 300
 
 # Render сам прокидывает RENDER_EXTERNAL_URL с публичным адресом сервиса —
 # используем его, если WEBAPP_URL не задан явно (для локального туннеля).

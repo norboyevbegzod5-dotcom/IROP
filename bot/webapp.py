@@ -1,10 +1,10 @@
+import asyncio
 import os
 from datetime import date, datetime, timedelta
 
 from aiohttp import web
 
-from bot import checkins, db, handlers
-from bot.config import ADMIN_CHAT_ID
+from bot import ai, checkins, db, handlers
 from bot.telegram_auth import get_user, validate_init_data
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webapp_static")
@@ -98,31 +98,46 @@ async def handle_message(request: web.Request):
     if not text:
         return web.json_response({"error": "empty"}, status=400)
 
-    today = date.today().isoformat()
-    db.log_message(employee["key"], today, "employee", text)
+    reply = await handlers.employee_message(request.app["bot"], employee, text)
+    return web.json_response({"ok": True, "reply": reply})
 
-    bot = request.app["bot"]
-    session = db.get_active_session(employee["key"])
 
-    if session is not None:
-        reply, report = await checkins.handle_answer(session, employee, text)
-        db.log_message(employee["key"], today, "bot", reply)
-        if report is not None and ADMIN_CHAT_ID is not None:
-            await bot.send_message(chat_id=ADMIN_CHAT_ID, text=report)
-    else:
-        reply = await handlers.ai_chat_reply(bot, employee, text)
-        return web.json_response({"ok": True, "reply": reply})
+_AUDIO_EXTENSIONS = {"audio/webm": "webm", "audio/mp4": "mp4", "audio/ogg": "ogg",
+                     "audio/mpeg": "mp3", "audio/wav": "wav", "audio/x-m4a": "m4a"}
 
-    return web.json_response({"ok": True})
+
+async def handle_voice(request: web.Request):
+    # multipart: initData (текст) + audio (файл записи из MediaRecorder)
+    form = await request.post()
+    employee, err = _authenticate({"initData": form.get("initData", "")})
+    if err:
+        return err
+
+    audio = form.get("audio")
+    if audio is None or not hasattr(audio, "file"):
+        return web.json_response({"error": "no_audio"}, status=400)
+
+    content_type = (audio.content_type or "").split(";")[0].strip()
+    ext = _AUDIO_EXTENSIONS.get(content_type, "webm")
+    data = audio.file.read()
+
+    text = await asyncio.to_thread(ai.transcribe, data, f"voice.{ext}")
+    if text is None:
+        return web.json_response({"error": "not_recognized"}, status=422)
+
+    reply = await handlers.employee_message(request.app["bot"], employee, text)
+    return web.json_response({"ok": True, "text": text, "reply": reply})
 
 
 def build_app(bot) -> web.Application:
-    app = web.Application()
+    # Лимит тела запроса поднят ради голосовых (по умолчанию в aiohttp — 1 МБ).
+    app = web.Application(client_max_size=25 * 1024 * 1024)
     app["bot"] = bot
     app.router.add_get("/", handle_index)
     app.router.add_post("/api/state", handle_state)
     app.router.add_post("/api/start", handle_start)
     app.router.add_post("/api/message", handle_message)
+    app.router.add_post("/api/voice", handle_voice)
     return app
 
 

@@ -122,6 +122,18 @@ def ai_error() -> str:
     return "Не смог обработать через AI. Проверь OPENAI_API_KEY или переформулируй задачу."
 
 
+def voice_transcript(text: str) -> str:
+    return f"🎤 {text}"
+
+
+def voice_not_recognized() -> str:
+    return "Не смог разобрать голосовое 😕 Попробуй ещё раз или напиши текстом."
+
+
+def voice_too_long(minutes: int) -> str:
+    return f"Голосовое слишком длинное — уложись, пожалуйста, в {minutes} минут."
+
+
 def employee_ai_unavailable() -> str:
     return "Сейчас не могу ответить — передал сообщение руководителю, он ответит сам."
 

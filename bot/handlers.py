@@ -7,7 +7,7 @@ from telegram.error import BadRequest, Forbidden
 from telegram.ext import ContextTypes
 
 from bot import ai, checkins, db, texts
-from bot.config import ADMIN_CHAT_ID, BOT_NAME, EMPLOYEES, WEBAPP_URL
+from bot.config import ADMIN_CHAT_ID, BOT_NAME, EMPLOYEES, MAX_VOICE_SECONDS, WEBAPP_URL
 
 _EMPLOYEE_KEYS = {e.key for e in EMPLOYEES}
 
@@ -293,6 +293,29 @@ async def ai_chat_reply(bot, employee, text: str) -> str:
     return reply
 
 
+async def employee_message(bot, employee, text: str) -> str:
+    """Общая обработка сообщения сотрудника (текст или расшифровка голосового) — и для
+    обычного чата, и для мини-аппа: ответ в чек-ине либо свободный AI-чат. История
+    пишется в chat_messages, поэтому оба канала видят одну и ту же переписку."""
+    today_str = date.today().isoformat()
+    db.log_message(employee["key"], today_str, "employee", text)
+
+    session = db.get_active_session(employee["key"])
+    if session is None:
+        return await ai_chat_reply(bot, employee, text)
+
+    reply, report = await checkins.handle_answer(session, employee, text)
+    db.log_message(employee["key"], today_str, "bot", reply)
+
+    if report is not None and ADMIN_CHAT_ID is not None:
+        try:
+            await bot.send_message(chat_id=ADMIN_CHAT_ID, text=report)
+        except (Forbidden, BadRequest):
+            pass
+
+    return reply
+
+
 async def employee_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if _is_admin(chat_id):
@@ -306,26 +329,35 @@ async def employee_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if employee is None:
         return
 
-    session = db.get_active_session(employee["key"])
-    if session is None:
-        db.log_message(employee["key"], date.today().isoformat(), "employee", text)
-        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-        reply = await ai_chat_reply(context.bot, employee, text)
-        await update.message.reply_text(reply, reply_markup=_webapp_keyboard())
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    reply = await employee_message(context.bot, employee, text)
+    await update.message.reply_text(reply)
+
+
+async def employee_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if _is_admin(chat_id):
         return
 
-    if WEBAPP_URL:
-        await update.message.reply_text(
-            "Отвечай, пожалуйста, в чате мини-приложения 👇", reply_markup=_webapp_keyboard()
-        )
+    employee = db.get_employee_by_chat(chat_id)
+    if employee is None:
+        await update.message.reply_text(texts.not_registered())
+        return
+
+    voice = update.message.voice
+    if voice.duration and voice.duration > MAX_VOICE_SECONDS:
+        await update.message.reply_text(texts.voice_too_long(MAX_VOICE_SECONDS // 60))
         return
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    reply, report = await checkins.handle_answer(session, employee, text)
-    await update.message.reply_text(reply)
+    tg_file = await voice.get_file()
+    audio = bytes(await tg_file.download_as_bytearray())
+    text = await asyncio.to_thread(ai.transcribe, audio, "voice.ogg")
+    if text is None:
+        await update.message.reply_text(texts.voice_not_recognized())
+        return
 
-    if report is not None and ADMIN_CHAT_ID is not None:
-        try:
-            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=report)
-        except (Forbidden, BadRequest):
-            pass
+    await update.message.reply_text(texts.voice_transcript(text))
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    reply = await employee_message(context.bot, employee, text)
+    await update.message.reply_text(reply)

@@ -2,7 +2,7 @@ import json
 
 from openai import OpenAI
 
-from bot.config import EMPLOYEES, OPENAI_API_KEY, OPENAI_MODEL
+from bot.config import BOT_NAME, EMPLOYEES, OPENAI_API_KEY, OPENAI_MODEL
 
 _client = None
 
@@ -63,6 +63,45 @@ def _system_prompt() -> str:
         "description должен быть готовой формулировкой задачи, которую сотрудник получит "
         "в Telegram от лица руководителя — по-деловому и конкретно."
     )
+
+
+_HISTORY_LIMIT = 20
+
+
+def _employee_system_prompt(full_name: str, tasks) -> str:
+    if tasks:
+        task_lines = "\n".join(f"- {t['title']} (статус: {t['status']})" for t in tasks)
+    else:
+        task_lines = "- задач на сегодня нет"
+    return (
+        f"Ты — {BOT_NAME}, AI-ассистент РОПа (руководителя отдела продаж). С тобой в рабочем "
+        f"чате пишет сотрудник отдела продаж {full_name}. Помогай ему по работе: как вести "
+        "переговоры и отрабатывать возражения, как написать сообщение или КП клиенту, как "
+        "спланировать день, что делать с его задачами. Отвечай на русском, коротко и по делу, "
+        "дружелюбно, но как руководитель — без воды. Если вопрос требует решения руководителя "
+        "(деньги, скидки, увольнение, конфликт), скажи, что передал вопрос руководителю. "
+        "Не выдумывай факты о клиентах, ценах и условиях компании.\n\n"
+        f"Задачи сотрудника на сегодня:\n{task_lines}"
+    )
+
+
+def employee_reply(full_name: str, history, tasks):
+    """Ответ AI сотруднику. history — сообщения чата за сегодня (sender, text),
+    последнее из них — новое сообщение сотрудника. None, если AI недоступен."""
+    if not OPENAI_API_KEY:
+        return None
+
+    messages = [{"role": "system", "content": _employee_system_prompt(full_name, tasks)}]
+    for m in list(history)[-_HISTORY_LIMIT:]:
+        role = "user" if m["sender"] == "employee" else "assistant"
+        messages.append({"role": role, "content": m["text"]})
+
+    try:
+        resp = _get_client().chat.completions.create(model=OPENAI_MODEL, messages=messages)
+    except Exception:
+        return None
+
+    return (resp.choices[0].message.content or "").strip() or None
 
 
 def parse_task(admin_text: str):

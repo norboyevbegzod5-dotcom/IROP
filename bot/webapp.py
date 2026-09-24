@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta
 
 from aiohttp import web
 
-from bot import checkins, db, texts
+from bot import checkins, db, handlers, texts
 from bot.config import ADMIN_CHAT_ID
 from bot.telegram_auth import get_user, validate_init_data
 
@@ -123,10 +123,8 @@ async def handle_message(request: web.Request):
             if ADMIN_CHAT_ID is not None:
                 await bot.send_message(chat_id=ADMIN_CHAT_ID, text=report)
     else:
-        if ADMIN_CHAT_ID is not None:
-            await bot.send_message(
-                chat_id=ADMIN_CHAT_ID, text=f"💬 {employee['full_name']}: {text}"
-            )
+        reply = await handlers.ai_chat_reply(bot, employee, text)
+        return web.json_response({"ok": True, "reply": reply})
 
     return web.json_response({"ok": True})
 

@@ -122,6 +122,14 @@ def ai_error() -> str:
     return "Не смог обработать через AI. Проверь OPENAI_API_KEY или переформулируй задачу."
 
 
+def employee_ai_unavailable() -> str:
+    return "Сейчас не могу ответить — передал сообщение руководителю, он ответит сам."
+
+
+def employee_ai_dialog_admin(full_name: str, question: str, answer: str) -> str:
+    return f"💬 {full_name}: {question}\n\n🤖 Ответ AI: {answer}"
+
+
 def task_cancelled_employee(title: str) -> str:
     return f"🚫 Задача «{title}» отменена руководителем, можешь не выполнять."
 

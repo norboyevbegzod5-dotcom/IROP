@@ -101,8 +101,8 @@ async def handle_message(request: web.Request):
     if not text:
         return web.json_response({"error": "empty"}, status=400)
 
-    reply = await handlers.employee_message(request.app["bot"], employee, text)
-    return web.json_response({"ok": True, "reply": reply})
+    replies = await handlers.employee_message(request.app["bot"], employee, text)
+    return web.json_response({"ok": True, "replies": replies})
 
 
 # Сколько дней назад показывать завершённые задачи в разделе «Задачи».
@@ -122,6 +122,8 @@ def _task_json(t, now: datetime) -> dict:
         "status": status,
         "active": active,
         "deadline": deadline.strftime("%d.%m %H:%M"),
+        "closed_by_ai": t["closed_by"] == "ai",
+        "close_note": t["close_note"] or "",
         # Секунды до дедлайна считаем на сервере, чтобы не зависеть от часового пояса
         # телефона; дальше мини-апп сам тикает от этого значения.
         "seconds_left": int((deadline - now).total_seconds()),
@@ -202,8 +204,8 @@ async def handle_voice(request: web.Request):
     if text is None:
         return web.json_response({"error": "not_recognized"}, status=422)
 
-    reply = await handlers.employee_message(request.app["bot"], employee, text)
-    return web.json_response({"ok": True, "text": text, "reply": reply})
+    replies = await handlers.employee_message(request.app["bot"], employee, text)
+    return web.json_response({"ok": True, "text": text, "replies": replies})
 
 
 def build_app(bot) -> web.Application:

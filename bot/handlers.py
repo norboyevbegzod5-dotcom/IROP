@@ -364,19 +364,14 @@ async def ai_chat_reply(bot, employee, text: str) -> str:
     return reply
 
 
-async def employee_message(bot, employee, text: str) -> str:
-    """Общая обработка сообщения сотрудника (текст или расшифровка голосового) — и для
-    обычного чата, и для мини-аппа: ответ в чек-ине либо свободный AI-чат. История
-    пишется в chat_messages, поэтому оба канала видят одну и ту же переписку."""
-    today_str = date.today().isoformat()
-    db.log_message(employee["key"], today_str, "employee", text)
-
+async def _answer_employee(bot, employee, text: str) -> str:
+    """Ответ сотруднику: следующий шаг чек-ина либо свободный AI-чат."""
     session = db.get_active_session(employee["key"])
     if session is None:
         return await ai_chat_reply(bot, employee, text)
 
     reply, report = await checkins.handle_answer(session, employee, text)
-    db.log_message(employee["key"], today_str, "bot", reply)
+    db.log_message(employee["key"], date.today().isoformat(), "bot", reply)
 
     if report is not None and ADMIN_CHAT_ID is not None:
         try:
@@ -385,6 +380,85 @@ async def employee_message(bot, employee, text: str) -> str:
             pass
 
     return reply
+
+
+async def auto_close_tasks(bot, employee, text: str) -> list:
+    """AI закрывает задачи, о выполнении которых сотрудник сообщил в тексте.
+    Возвращает уведомления для сотрудника; руководителю уходит сообщение с цитатой
+    и кнопкой «Вернуть в работу» на случай ошибки AI."""
+    today_str = date.today().isoformat()
+    open_tasks = db.get_open_tasks(employee["key"], today_str)
+    if not open_tasks:
+        return []
+
+    # Контекст — несколько сообщений до текущего (само текущее уже записано последним).
+    history = db.get_messages_for_day(employee["key"], today_str)[-7:-1]
+    found = await asyncio.to_thread(ai.detect_completed_tasks, text, history, open_tasks)
+    by_id = {t["id"]: t for t in open_tasks}
+
+    notices = []
+    for item in found:
+        task = by_id[item["task_id"]]
+        if not db.close_task_by_ai(task["id"], employee["key"], item["evidence"]):
+            continue
+        notices.append(texts.task_autoclosed_employee(task["title"]))
+        if ADMIN_CHAT_ID is not None:
+            keyboard = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("↩️ Вернуть в работу", callback_data=f"reopen:{task['id']}")]]
+            )
+            try:
+                await bot.send_message(
+                    chat_id=ADMIN_CHAT_ID,
+                    text=texts.task_autoclosed_admin(
+                        employee["full_name"], task["title"], item["evidence"]
+                    ),
+                    reply_markup=keyboard,
+                )
+            except (Forbidden, BadRequest):
+                pass
+    return notices
+
+
+async def employee_message(bot, employee, text: str) -> list:
+    """Общая обработка сообщения сотрудника (текст или расшифровка голосового) — и для
+    обычного чата, и для мини-аппа. Возвращает сообщения бота по порядку: ответ AI и
+    уведомления о задачах, которые AI закрыл по этому тексту. История пишется в
+    chat_messages, поэтому оба канала видят одну и ту же переписку."""
+    today_str = date.today().isoformat()
+    db.log_message(employee["key"], today_str, "employee", text)
+
+    # Ответ и проверка задач — параллельно, чтобы не удваивать ожидание.
+    reply, notices = await asyncio.gather(
+        _answer_employee(bot, employee, text), auto_close_tasks(bot, employee, text)
+    )
+    for notice in notices:
+        db.log_message(employee["key"], today_str, "bot", notice)
+    return [reply] + notices
+
+
+async def on_reopen_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not _is_admin(query.message.chat_id):
+        await query.answer(texts.admin_only(), show_alert=True)
+        return
+
+    instance_id = int(query.data.split(":", 1)[1])
+    instance = db.get_instance(instance_id)
+    if instance is None or not db.reopen_task(instance_id):
+        await query.answer("Задачу уже нельзя вернуть.", show_alert=True)
+        return
+
+    employee = db.get_employee(instance["employee_key"])
+    if employee and employee["chat_id"]:
+        notice = texts.task_reopened_employee(instance["title"])
+        db.log_message(employee["key"], date.today().isoformat(), "bot", notice)
+        try:
+            await context.bot.send_message(chat_id=employee["chat_id"], text=notice)
+        except (Forbidden, BadRequest):
+            pass
+
+    await query.answer("Возвращено в работу")
+    await query.edit_message_text(f"↩️ Возвращено в работу: {instance['title']}")
 
 
 async def employee_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -401,8 +475,8 @@ async def employee_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    reply = await employee_message(context.bot, employee, text)
-    await update.message.reply_text(reply)
+    for message in await employee_message(context.bot, employee, text):
+        await update.message.reply_text(message)
 
 
 async def employee_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -430,5 +504,5 @@ async def employee_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(texts.voice_transcript(text))
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    reply = await employee_message(context.bot, employee, text)
-    await update.message.reply_text(reply)
+    for message in await employee_message(context.bot, employee, text):
+        await update.message.reply_text(message)

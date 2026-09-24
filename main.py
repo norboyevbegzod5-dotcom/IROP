@@ -27,6 +27,7 @@ def build_application() -> Application:
     application.add_handler(CallbackQueryHandler(handlers.on_cancel_callback, pattern=r"^cancel:"))
     application.add_handler(CallbackQueryHandler(handlers.on_accept_callback, pattern=r"^accept:"))
     application.add_handler(CallbackQueryHandler(handlers.on_style_callback, pattern=r"^style:"))
+    application.add_handler(CallbackQueryHandler(handlers.on_reopen_callback, pattern=r"^reopen:"))
 
     if ADMIN_CHAT_ID is not None:
         application.add_handler(

@@ -111,6 +111,7 @@ def init_db():
     with get_conn() as conn:
         conn.executescript(_SCHEMA)
         _migrate_task_instances(conn)
+        _migrate_task_autoclose(conn)
         _migrate_checkin_sessions(conn)
         _migrate_employees(conn)
         _seed_employees(conn)
@@ -141,6 +142,15 @@ def _migrate_task_instances(conn):
            FROM task_instances_old"""
     )
     conn.execute("DROP TABLE task_instances_old")
+
+
+def _migrate_task_autoclose(conn):
+    # closed_by: 'ai', если задачу закрыл AI по тексту сотрудника; close_note — цитата-
+    # основание; prev_status — статус до закрытия, чтобы руководитель мог вернуть задачу.
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(task_instances)").fetchall()}
+    for col in ("closed_by", "close_note", "prev_status"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE task_instances ADD COLUMN {col} TEXT")
 
 
 def _migrate_employees(conn):
@@ -300,6 +310,59 @@ def mark_done(instance_id: int, employee_key: str) -> bool:
         conn.execute(
             "UPDATE task_instances SET status = 'done', completed_at = ? WHERE id = ?",
             (datetime.now().isoformat(timespec="seconds"), instance_id),
+        )
+        return True
+
+
+_OPEN_STATUSES = ("pending", "accepted", "overdue")
+
+
+def get_open_tasks(employee_key: str, today_str: str):
+    """Незакрытые задачи сотрудника, которые AI может закрыть по тексту: все задачи
+    от руководителя + сегодняшние задачи по шаблонам."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM task_instances
+               WHERE employee_key = ? AND status IN ('pending', 'accepted', 'overdue')
+                 AND (source = 'manual' OR task_date = ?)
+               ORDER BY deadline_at""",
+            (employee_key, today_str),
+        ).fetchall()
+
+
+def close_task_by_ai(instance_id: int, employee_key: str, note: str) -> bool:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT status FROM task_instances WHERE id = ? AND employee_key = ?",
+            (instance_id, employee_key),
+        ).fetchone()
+        if row is None or row["status"] not in _OPEN_STATUSES:
+            return False
+        conn.execute(
+            """UPDATE task_instances
+               SET status = 'done', completed_at = ?, closed_by = 'ai', close_note = ?,
+                   prev_status = ?
+               WHERE id = ?""",
+            (datetime.now().isoformat(timespec="seconds"), note, row["status"], instance_id),
+        )
+        return True
+
+
+def reopen_task(instance_id: int) -> bool:
+    """Отменяет закрытие AI: возвращает статус, который был до закрытия."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT status, closed_by, prev_status FROM task_instances WHERE id = ?",
+            (instance_id,),
+        ).fetchone()
+        if row is None or row["status"] != "done" or row["closed_by"] != "ai":
+            return False
+        conn.execute(
+            """UPDATE task_instances
+               SET status = ?, completed_at = NULL, closed_by = NULL, close_note = NULL,
+                   prev_status = NULL
+               WHERE id = ?""",
+            (row["prev_status"] or "pending", instance_id),
         )
         return True
 

@@ -476,7 +476,9 @@ function taskCard(t, loadedAt) {
   const meta = document.createElement("div");
   meta.className = "task-meta";
   const status = document.createElement("span");
-  status.textContent = t.active ? STATUS_LABELS[t.status] : `Срок был ${t.deadline}`;
+  if (t.active) status.textContent = STATUS_LABELS[t.status];
+  else if (t.status === "done") status.textContent = t.closed_by_ai ? "✅ Выполнена · закрыл AI" : "✅ Выполнена";
+  else status.textContent = `Срок был ${t.deadline}`;
   meta.appendChild(status);
   if (t.active) {
     const countdown = document.createElement("span");
@@ -486,6 +488,14 @@ function taskCard(t, loadedAt) {
     taskTimers.push({ el: countdown, deadlineMs: loadedAt + t.seconds_left * 1000 });
   }
   card.appendChild(meta);
+
+  if (t.close_note) {
+    const note = document.createElement("div");
+    note.className = "task-desc";
+    note.style.color = "var(--hint)";
+    note.textContent = `«${t.close_note}»`;
+    card.appendChild(note);
+  }
 
   if (t.status === "pending" || t.status === "overdue") {
     const btn = document.createElement("button");

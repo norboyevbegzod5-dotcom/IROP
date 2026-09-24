@@ -6,7 +6,7 @@ from telegram.constants import ChatAction
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import ContextTypes
 
-from bot import ai, checkins, db, texts
+from bot import ai, checkins, db, styles, texts
 from bot.config import ADMIN_CHAT_ID, BOT_NAME, EMPLOYEES, MAX_VOICE_SECONDS, WEBAPP_URL
 
 _EMPLOYEE_KEYS = {e.key for e in EMPLOYEES}
@@ -32,7 +32,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if _is_admin(chat_id):
         await update.message.reply_text(
             f"Привет, руководитель. Я {BOT_NAME}. Команды: /status — статус за сегодня, "
-            f"/team — кто из команды подключился."
+            f"/team — кто из команды подключился, /style — характер AI-РОПа "
+            f"(строгий или мотиватор) для каждого сотрудника."
         )
         return
 
@@ -145,6 +146,64 @@ async def team_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(texts.team_line(e.full_name, bool(row and row["chat_id"])))
 
     await update.message.reply_text("\n".join(lines))
+
+
+def _style_menu():
+    """Текст и кнопки выбора характера РОПа: по строке на сотрудника + «всем»."""
+    rows = {r["key"]: r for r in db.all_employees()}
+    lines = ["Характер AI-РОПа для каждого сотрудника:"]
+    buttons = []
+    for e in EMPLOYEES:
+        current = styles.normalize(rows[e.key]["rop_style"] if e.key in rows else None)
+        lines.append(f"• {e.full_name} — {styles.LABELS[current]}")
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    ("✓ " if s == current else "") + f"{e.full_name}: {label}",
+                    callback_data=f"style:{e.key}:{s}",
+                )
+                for s, label in styles.LABELS.items()
+            ]
+        )
+    buttons.append(
+        [
+            InlineKeyboardButton(f"Всем: {label}", callback_data=f"style:all:{s}")
+            for s, label in styles.LABELS.items()
+        ]
+    )
+    return "\n".join(lines), InlineKeyboardMarkup(buttons)
+
+
+async def style_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_chat.id):
+        await update.message.reply_text(texts.admin_only())
+        return
+
+    text, keyboard = _style_menu()
+    await update.message.reply_text(text, reply_markup=keyboard)
+
+
+async def on_style_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not _is_admin(query.message.chat_id):
+        await query.answer(texts.admin_only(), show_alert=True)
+        return
+
+    _, key, style = query.data.split(":", 2)
+    if style not in styles.LABELS or (key != "all" and key not in _EMPLOYEE_KEYS):
+        await query.answer()
+        return
+
+    for e in EMPLOYEES:
+        if key in ("all", e.key):
+            db.set_rop_style(e.key, style)
+
+    await query.answer(f"Готово: {styles.LABELS[style]}")
+    text, keyboard = _style_menu()
+    try:
+        await query.edit_message_text(text, reply_markup=keyboard)
+    except BadRequest:
+        pass  # ничего не изменилось — Telegram не даёт отредактировать тем же текстом
 
 
 async def admin_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -286,7 +345,9 @@ async def ai_chat_reply(bot, employee, text: str) -> str:
     history = db.get_messages_for_day(employee["key"], today_str)
     tasks = db.get_tasks_for_employee_on(employee["key"], today_str)
 
-    reply = await asyncio.to_thread(ai.employee_reply, employee["full_name"], history, tasks)
+    reply = await asyncio.to_thread(
+        ai.employee_reply, employee["full_name"], history, tasks, employee["rop_style"]
+    )
     if reply is None:
         reply = texts.employee_ai_unavailable()
     db.log_message(employee["key"], today_str, "bot", reply)

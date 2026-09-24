@@ -2,6 +2,7 @@ import json
 
 from openai import OpenAI
 
+from bot import styles
 from bot.config import (
     BOT_NAME,
     EMPLOYEES,
@@ -90,7 +91,7 @@ def transcribe(audio: bytes, filename: str):
 _HISTORY_LIMIT = 20
 
 
-def _employee_system_prompt(full_name: str, tasks) -> str:
+def _employee_system_prompt(full_name: str, tasks, style: str) -> str:
     if tasks:
         task_lines = "\n".join(f"- {t['title']} (статус: {t['status']})" for t in tasks)
     else:
@@ -100,20 +101,23 @@ def _employee_system_prompt(full_name: str, tasks) -> str:
         f"чате пишет сотрудник отдела продаж {full_name}. Помогай ему по работе: как вести "
         "переговоры и отрабатывать возражения, как написать сообщение или КП клиенту, как "
         "спланировать день, что делать с его задачами. Отвечай на русском, коротко и по делу, "
-        "дружелюбно, но как руководитель — без воды. Если вопрос требует решения руководителя "
+        "как руководитель — без воды. Если вопрос требует решения руководителя "
         "(деньги, скидки, увольнение, конфликт), скажи, что передал вопрос руководителю. "
         "Не выдумывай факты о клиентах, ценах и условиях компании.\n\n"
+        f"{styles.PROMPTS[styles.normalize(style)]}\n\n"
         f"Задачи сотрудника на сегодня:\n{task_lines}"
     )
 
 
-def employee_reply(full_name: str, history, tasks):
+def employee_reply(full_name: str, history, tasks, style: str):
     """Ответ AI сотруднику. history — сообщения чата за сегодня (sender, text),
     последнее из них — новое сообщение сотрудника. None, если AI недоступен."""
     if not OPENAI_API_KEY:
         return None
 
-    messages = [{"role": "system", "content": _employee_system_prompt(full_name, tasks)}]
+    messages = [
+        {"role": "system", "content": _employee_system_prompt(full_name, tasks, style)}
+    ]
     for m in list(history)[-_HISTORY_LIMIT:]:
         role = "user" if m["sender"] == "employee" else "assistant"
         messages.append({"role": role, "content": m["text"]})
@@ -137,8 +141,8 @@ _CHECKIN_TOOL = {
                 "message": {
                     "type": "string",
                     "description": (
-                        "Сообщение сотруднику: следующий вопрос, либо короткое "
-                        "завершение, если finished=true"
+                        "Сообщение сотруднику: следующий вопрос, либо короткий "
+                        "фидбэк по итогам в своём стиле, если finished=true"
                     ),
                 },
                 "finished": {
@@ -169,13 +173,16 @@ def _checkin_system_prompt(full_name, title, goal, context, must_finish) -> str:
         f"сотрудником {full_name} в чате.\n\n"
         f"Цель разговора: {goal}\n\n"
         "Правила:\n"
-        "- Задавай ровно один вопрос за сообщение, коротко и живо, по-русски, на «ты».\n"
+        "- Задавай ровно один вопрос за сообщение, коротко, по-русски, на «ты», в своём стиле.\n"
         "- Каждый следующий вопрос строй из предыдущих ответов: уточняй расплывчатое "
         "(«несколько» — сколько? «клиент» — какой?), не спрашивай то, что уже сказано.\n"
         "- Если сотрудник сам ответил на несколько пунктов сразу — не переспрашивай их.\n"
         "- Первое сообщение начни с короткого приветствия и сразу первого вопроса.\n"
-        "- Когда всё из цели выяснено — finished=true, коротко поблагодари и заполни report.\n"
-        "- Не давай оценок и советов посреди опроса, просто собирай информацию.\n\n"
+        "- Не давай развёрнутых оценок посреди опроса, сначала собери информацию.\n"
+        "- Когда всё из цели выяснено — finished=true и заполни report. В message дай "
+        "короткий фидбэк (2-4 предложения) по цифрам и фактам из разговора в своём стиле и "
+        "один конкретный ориентир на следующий шаг.\n\n"
+        f"{styles.PROMPTS[styles.normalize(context.get('style'))]}\n\n"
         f"Предыдущий отчёт сотрудника:\n{previous}\n\n"
         f"Задачи сотрудника на сегодня:\n{task_lines}"
     )

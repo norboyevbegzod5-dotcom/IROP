@@ -122,6 +122,21 @@ def ai_error() -> str:
     return "Не смог обработать через AI. Проверь OPENAI_API_KEY или переформулируй задачу."
 
 
+def task_autoclosed_employee(title: str) -> str:
+    return f"✅ Закрыл задачу «{title}» — по твоему сообщению. Если рано — скажи руководителю."
+
+
+def task_autoclosed_admin(full_name: str, title: str, evidence: str) -> str:
+    text = f"✅ AI закрыл задачу у {full_name}: «{title}»"
+    if evidence:
+        text += f"\nОснование: «{evidence}»"
+    return text
+
+
+def task_reopened_employee(title: str) -> str:
+    return f"↩️ Руководитель вернул задачу «{title}» в работу."
+
+
 def voice_transcript(text: str) -> str:
     return f"🎤 {text}"
 

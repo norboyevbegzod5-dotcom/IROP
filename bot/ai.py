@@ -227,6 +227,96 @@ def checkin_step(full_name, title, goal, turns, context, must_finish):
     return step
 
 
+_CLOSE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "close_tasks",
+        "description": "Отметить задачи, которые сотрудник в последнем сообщении назвал выполненными.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "completed": {
+                    "type": "array",
+                    "description": "Выполненные задачи; пустой массив, если таких нет",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {"type": "integer"},
+                            "evidence": {
+                                "type": "string",
+                                "description": "Короткая дословная цитата из сообщения сотрудника",
+                            },
+                        },
+                        "required": ["task_id", "evidence"],
+                    },
+                },
+            },
+            "required": ["completed"],
+        },
+    },
+}
+
+_CLOSE_PROMPT = (
+    "Ты следишь за задачами сотрудника отдела продаж. По его ПОСЛЕДНЕМУ сообщению определи, "
+    "какие из открытых задач он выполнил ПОЛНОСТЬЮ.\n\n"
+    "Закрывай задачу, только если сотрудник прямо сообщает о свершившемся результате, "
+    "который целиком покрывает задачу («отправил КП в Makro», «договор с Evos подписан», "
+    "«отчёт скинул»).\n"
+    "НЕ закрывай, если это:\n"
+    "- план или намерение («сегодня отправлю», «буду звонить»);\n"
+    "- частичный прогресс («сделал 40 звонков» при задаче на 150; «начал готовить КП»);\n"
+    "- упоминание задачи без результата, вопрос о ней или отказ клиента, если задача была "
+    "добиться результата;\n"
+    "- сообщение про другого клиента или другую работу.\n"
+    "Предыдущие сообщения даны только для понимания, о чём речь. Если сомневаешься — "
+    "не закрывай. Никогда не выдумывай task_id: только из списка."
+)
+
+
+def detect_completed_tasks(message: str, history, tasks) -> list:
+    """[{"task_id", "evidence"}] — задачи из tasks, которые сотрудник закрыл сообщением
+    message. history — предыдущие сообщения (sender, text) для контекста. [] при ошибке."""
+    if not OPENAI_API_KEY or not tasks:
+        return []
+
+    task_lines = "\n".join(
+        f"- task_id={t['id']}: {t['title']}"
+        + (f" — {t['description']}" if t["description"] and t["description"] != t["title"] else "")
+        for t in tasks
+    )
+    context_lines = "\n".join(
+        f"{'Сотрудник' if m['sender'] == 'employee' else 'РОП'}: {m['text']}" for m in history
+    ) or "—"
+
+    try:
+        resp = _get_client().chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": _CLOSE_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Открытые задачи:\n{task_lines}\n\n"
+                        f"Предыдущие сообщения:\n{context_lines}\n\n"
+                        f"ПОСЛЕДНЕЕ сообщение сотрудника:\n{message}"
+                    ),
+                },
+            ],
+            tools=[_CLOSE_TOOL],
+            tool_choice={"type": "function", "function": {"name": "close_tasks"}},
+        )
+        args = json.loads(resp.choices[0].message.tool_calls[0].function.arguments)
+    except Exception:
+        return []
+
+    valid_ids = {t["id"] for t in tasks}
+    result = []
+    for item in args.get("completed") or []:
+        if isinstance(item, dict) and item.get("task_id") in valid_ids:
+            result.append({"task_id": item["task_id"], "evidence": str(item.get("evidence", ""))})
+    return result
+
+
 def parse_task(admin_text: str):
     if not OPENAI_API_KEY:
         return None

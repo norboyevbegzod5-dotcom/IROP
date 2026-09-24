@@ -4,7 +4,10 @@ from datetime import date, datetime, timedelta
 
 from aiohttp import web
 
-from bot import ai, checkins, db, handlers
+from telegram.error import BadRequest, Forbidden
+
+from bot import ai, checkins, db, handlers, texts
+from bot.config import ADMIN_CHAT_ID
 from bot.telegram_auth import get_user, validate_init_data
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webapp_static")
@@ -102,6 +105,80 @@ async def handle_message(request: web.Request):
     return web.json_response({"ok": True, "reply": reply})
 
 
+# Сколько дней назад показывать завершённые задачи в разделе «Задачи».
+_TASKS_HISTORY_DAYS = 14
+
+
+def _task_json(t, now: datetime) -> dict:
+    deadline = datetime.fromisoformat(t["deadline_at"])
+    status = t["status"]
+    if status == "pending" and deadline <= now:
+        status = "overdue"  # джоба отметит чуть позже, но показываем уже сейчас
+    active = status in ("pending", "overdue") or (status == "accepted" and deadline > now)
+    return {
+        "id": t["id"],
+        "title": t["title"],
+        "description": t["description"] or "",
+        "status": status,
+        "active": active,
+        "deadline": deadline.strftime("%d.%m %H:%M"),
+        # Секунды до дедлайна считаем на сервере, чтобы не зависеть от часового пояса
+        # телефона; дальше мини-апп сам тикает от этого значения.
+        "seconds_left": int((deadline - now).total_seconds()),
+    }
+
+
+async def handle_tasks(request: web.Request):
+    payload = await request.json()
+    employee, err = _authenticate(payload)
+    if err:
+        return err
+
+    now = datetime.now()
+    since = (date.today() - timedelta(days=_TASKS_HISTORY_DAYS)).isoformat()
+    tasks = [_task_json(t, now) for t in db.get_manual_tasks(employee["key"], since)]
+    active = [t for t in tasks if t["active"]]
+    return web.json_response(
+        {
+            "tasks": active + [t for t in tasks if not t["active"]][::-1],
+            "counts": {
+                "active": len(active),
+                "to_accept": sum(1 for t in active if t["status"] in ("pending", "overdue")),
+                "overdue": sum(1 for t in active if t["status"] == "overdue"),
+                "accepted": sum(1 for t in active if t["status"] == "accepted"),
+            },
+        }
+    )
+
+
+async def handle_task_accept(request: web.Request):
+    payload = await request.json()
+    employee, err = _authenticate(payload)
+    if err:
+        return err
+
+    try:
+        task_id = int(payload.get("task_id"))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "bad_task_id"}, status=400)
+
+    # mark_accepted сам проверяет, что задача этого сотрудника и ещё не принята.
+    if not db.mark_accepted(task_id, employee["key"]):
+        return web.json_response({"error": "not_acceptable"}, status=409)
+
+    instance = db.get_instance(task_id)
+    if ADMIN_CHAT_ID is not None:
+        try:
+            await request.app["bot"].send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=texts.accept_confirm_admin(employee["full_name"], instance["title"]),
+            )
+        except (Forbidden, BadRequest):
+            pass
+
+    return web.json_response({"ok": True})
+
+
 _AUDIO_EXTENSIONS = {"audio/webm": "webm", "audio/mp4": "mp4", "audio/ogg": "ogg",
                      "audio/mpeg": "mp3", "audio/wav": "wav", "audio/x-m4a": "m4a"}
 
@@ -138,6 +215,8 @@ def build_app(bot) -> web.Application:
     app.router.add_post("/api/start", handle_start)
     app.router.add_post("/api/message", handle_message)
     app.router.add_post("/api/voice", handle_voice)
+    app.router.add_post("/api/tasks", handle_tasks)
+    app.router.add_post("/api/tasks/accept", handle_task_accept)
     return app
 
 

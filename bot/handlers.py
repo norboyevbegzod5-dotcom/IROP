@@ -186,9 +186,19 @@ async def admin_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if employee_row and employee_row["chat_id"]:
             task_text = texts.manual_task_message(emp.full_name, title, description, deadline_str)
-            keyboard = InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🖐 Принять", callback_data=f"accept:{instance_id}")]]
-            )
+            buttons = [[InlineKeyboardButton("🖐 Принять", callback_data=f"accept:{instance_id}")]]
+            if WEBAPP_URL:
+                from telegram import WebAppInfo
+
+                buttons.append(
+                    [
+                        InlineKeyboardButton(
+                            "📋 Все мои задачи",
+                            web_app=WebAppInfo(url=f"{WEBAPP_URL}/?tab=tasks"),
+                        )
+                    ]
+                )
+            keyboard = InlineKeyboardMarkup(buttons)
             try:
                 await context.bot.send_message(
                     chat_id=employee_row["chat_id"], text=task_text, reply_markup=keyboard

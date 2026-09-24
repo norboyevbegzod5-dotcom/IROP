@@ -25,11 +25,72 @@
     display: flex;
     flex-direction: column;
   }
-  #header {
-    padding: 12px 16px;
-    font-weight: 600;
+  #tabs {
+    display: flex;
     border-bottom: 1px solid rgba(128,128,128,0.2);
   }
+  .tab {
+    flex: 1;
+    padding: 12px 8px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: none;
+    color: var(--hint);
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .tab.active { color: var(--text); border-bottom-color: var(--button); }
+  .badge {
+    display: inline-block;
+    min-width: 20px;
+    padding: 1px 6px;
+    margin-left: 4px;
+    border-radius: 10px;
+    background: var(--button);
+    color: var(--button-text);
+    font-size: 12px;
+    line-height: 18px;
+  }
+  .badge.alert { background: #e53935; color: #fff; }
+  .view { display: none; flex: 1; min-height: 0; flex-direction: column; }
+  .view.active { display: flex; }
+  #view-tasks { overflow-y: auto; padding: 12px; gap: 10px; }
+  #tasksSummary { display: flex; gap: 8px; }
+  .stat {
+    flex: 1;
+    padding: 10px 8px;
+    border-radius: 12px;
+    background: var(--bubble-bot);
+    text-align: center;
+  }
+  .stat b { display: block; font-size: 22px; }
+  .stat span { font-size: 12px; color: var(--hint); }
+  .stat.alert b { color: #e53935; }
+  .section-title { margin: 8px 2px 0; font-size: 13px; color: var(--hint); font-weight: 600; }
+  #tasksList { display: flex; flex-direction: column; gap: 10px; }
+  .task {
+    padding: 12px 14px;
+    border-radius: 14px;
+    background: var(--bubble-bot);
+    border-left: 4px solid var(--button);
+  }
+  .task.overdue { border-left-color: #e53935; }
+  .task.pending { border-left-color: #fb8c00; }
+  .task.done { opacity: 0.6; border-left-color: var(--hint); }
+  .task-title { font-weight: 600; font-size: 15px; }
+  .task-desc { margin-top: 4px; font-size: 14px; white-space: pre-wrap; }
+  .task-meta {
+    margin-top: 8px;
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--hint);
+  }
+  .countdown { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+  .task.overdue .countdown { color: #e53935; }
+  .task .action-btn { width: 100%; margin-top: 10px; }
   #chat {
     flex: 1;
     overflow-y: auto;
@@ -112,14 +173,25 @@
 </style>
 </head>
 <body>
-  <div id="header">РОП — рабочий чат</div>
-  <div id="chat"></div>
-  <div id="actions"></div>
-  <div id="inputbar" style="display:none;">
-    <input id="textInput" type="text" placeholder="Напиши сообщение..." />
-    <button id="micBtn" title="Голосовое сообщение">🎤</button>
-    <button id="sendBtn">➤</button>
-  </div>
+  <nav id="tabs">
+    <button class="tab active" data-view="chat">💬 РОП</button>
+    <button class="tab" data-view="tasks">📋 Задачи <span id="tasksBadge" class="badge" hidden></span></button>
+  </nav>
+
+  <section id="view-chat" class="view active">
+    <div id="chat"></div>
+    <div id="actions"></div>
+    <div id="inputbar" style="display:none;">
+      <input id="textInput" type="text" placeholder="Напиши сообщение..." />
+      <button id="micBtn" title="Голосовое сообщение">🎤</button>
+      <button id="sendBtn">➤</button>
+    </div>
+  </section>
+
+  <section id="view-tasks" class="view">
+    <div id="tasksSummary"></div>
+    <div id="tasksList"></div>
+  </section>
 
 <script>
 const tg = window.Telegram ? window.Telegram.WebApp : null;
@@ -324,7 +396,163 @@ textInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") sendMessage();
 });
 
+// ---------- разделы ----------
+const tabButtons = document.querySelectorAll(".tab");
+
+function showView(name) {
+  tabButtons.forEach((b) => b.classList.toggle("active", b.dataset.view === name));
+  document.querySelectorAll(".view").forEach((v) =>
+    v.classList.toggle("active", v.id === "view-" + name)
+  );
+  if (name === "tasks") loadTasks();
+}
+
+tabButtons.forEach((b) => (b.onclick = () => showView(b.dataset.view)));
+
+// ---------- задачи ----------
+const tasksBadge = document.getElementById("tasksBadge");
+const tasksSummaryEl = document.getElementById("tasksSummary");
+const tasksListEl = document.getElementById("tasksList");
+let taskTimers = [];   // [{el, deadlineMs}] для тикающих счётчиков до дедлайна
+
+const STATUS_LABELS = {
+  pending: "⏳ Ждёт принятия",
+  overdue: "🔴 Просрочена",
+  accepted: "🖐 В работе",
+};
+
+function formatLeft(ms) {
+  const overdue = ms < 0;
+  let s = Math.floor(Math.abs(ms) / 1000);
+  const d = Math.floor(s / 86400); s %= 86400;
+  const h = Math.floor(s / 3600); s %= 3600;
+  const m = Math.floor(s / 60);
+  let text;
+  if (d > 0) text = `${d} д ${h} ч`;
+  else if (h > 0) text = `${h} ч ${m} мин`;
+  else text = `${m} мин ${s % 60} с`;
+  return overdue ? `просрочено на ${text}` : `осталось ${text}`;
+}
+
+function tickCountdowns() {
+  const now = Date.now();
+  taskTimers.forEach((t) => { t.el.textContent = formatLeft(t.deadlineMs - now); });
+}
+setInterval(tickCountdowns, 1000);
+
+function renderBadge(counts) {
+  tasksBadge.hidden = counts.active === 0;
+  tasksBadge.textContent = counts.active;
+  tasksBadge.classList.toggle("alert", counts.to_accept > 0);
+}
+
+function stat(value, label, alert) {
+  const div = document.createElement("div");
+  div.className = "stat" + (alert && value > 0 ? " alert" : "");
+  const b = document.createElement("b");
+  b.textContent = value;
+  const span = document.createElement("span");
+  span.textContent = label;
+  div.append(b, span);
+  return div;
+}
+
+function taskCard(t, loadedAt) {
+  const card = document.createElement("div");
+  card.className = "task " + (t.active ? t.status : "done");
+
+  const title = document.createElement("div");
+  title.className = "task-title";
+  title.textContent = t.title;
+  card.appendChild(title);
+
+  if (t.description && t.description !== t.title) {
+    const desc = document.createElement("div");
+    desc.className = "task-desc";
+    desc.textContent = t.description;
+    card.appendChild(desc);
+  }
+
+  const meta = document.createElement("div");
+  meta.className = "task-meta";
+  const status = document.createElement("span");
+  status.textContent = t.active ? STATUS_LABELS[t.status] : `Срок был ${t.deadline}`;
+  meta.appendChild(status);
+  if (t.active) {
+    const countdown = document.createElement("span");
+    countdown.className = "countdown";
+    countdown.title = `Дедлайн: ${t.deadline}`;
+    meta.appendChild(countdown);
+    taskTimers.push({ el: countdown, deadlineMs: loadedAt + t.seconds_left * 1000 });
+  }
+  card.appendChild(meta);
+
+  if (t.status === "pending" || t.status === "overdue") {
+    const btn = document.createElement("button");
+    btn.className = "action-btn";
+    btn.textContent = "🖐 Принять";
+    btn.onclick = () => acceptTask(t.id, btn);
+    card.appendChild(btn);
+  }
+  return card;
+}
+
+async function loadTasks() {
+  const data = await api("/api/tasks");
+  if (data.error) return;
+  const loadedAt = Date.now();
+
+  renderBadge(data.counts);
+  tasksSummaryEl.innerHTML = "";
+  tasksSummaryEl.append(
+    stat(data.counts.active, "активных"),
+    stat(data.counts.to_accept, "ждут принятия", true),
+    stat(data.counts.overdue, "просрочено", true)
+  );
+
+  taskTimers = [];
+  tasksListEl.innerHTML = "";
+  if (!data.tasks.length) {
+    const empty = document.createElement("div");
+    empty.id = "status";
+    empty.textContent = "Задач от руководителя пока нет.";
+    tasksListEl.appendChild(empty);
+    return;
+  }
+
+  const active = data.tasks.filter((t) => t.active);
+  const past = data.tasks.filter((t) => !t.active);
+  if (active.length) {
+    active.forEach((t) => tasksListEl.appendChild(taskCard(t, loadedAt)));
+  }
+  if (past.length) {
+    const h = document.createElement("div");
+    h.className = "section-title";
+    h.textContent = "Завершённые";
+    tasksListEl.appendChild(h);
+    past.forEach((t) => tasksListEl.appendChild(taskCard(t, loadedAt)));
+  }
+  tickCountdowns();
+}
+
+async function acceptTask(id, btn) {
+  btn.disabled = true;
+  const data = await api("/api/tasks/accept", { task_id: id });
+  if (data.error) notify("Не удалось принять задачу — возможно, она уже принята или отменена.");
+  if (tg && tg.HapticFeedback && !data.error) tg.HapticFeedback.notificationOccurred("success");
+  await loadTasks();
+}
+
+// Обновляем задачи, когда приложение снова на экране, и раз в минуту — чтобы
+// новая задача от руководителя сразу появлялась в счётчике.
+document.addEventListener("visibilitychange", () => { if (!document.hidden) loadTasks(); });
+setInterval(loadTasks, 60000);
+
 loadState();
+loadTasks();
+// ?tab=tasks — открыть сразу раздел задач (кнопка в уведомлении о новой задаче).
+// Не #tasks: хеш Telegram занимает своими параметрами.
+if (new URLSearchParams(location.search).get("tab") === "tasks") showView("tasks");
 </script>
 </body>
 </html>

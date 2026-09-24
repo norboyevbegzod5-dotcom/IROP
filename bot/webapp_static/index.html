@@ -91,7 +91,7 @@
     font-size: 15px;
     outline: none;
   }
-  #sendBtn {
+  #sendBtn, #micBtn {
     border: none;
     border-radius: 20px;
     padding: 0 18px;
@@ -100,6 +100,9 @@
     font-weight: 600;
     cursor: pointer;
   }
+  #micBtn { padding: 0 14px; background: var(--bubble-bot); }
+  #micBtn.recording { background: #e53935; color: #fff; }
+  #sendBtn:disabled, #micBtn:disabled { opacity: 0.5; }
   #status {
     text-align: center;
     color: var(--hint);
@@ -114,6 +117,7 @@
   <div id="actions"></div>
   <div id="inputbar" style="display:none;">
     <input id="textInput" type="text" placeholder="Напиши сообщение..." />
+    <button id="micBtn" title="Голосовое сообщение">🎤</button>
     <button id="sendBtn">➤</button>
   </div>
 
@@ -199,13 +203,8 @@ async function sendMessage() {
   if (!text || sendBtn.disabled) return;
   addBubble("employee", text);
   textInput.value = "";
-  sendBtn.disabled = true;
-  const typing = document.createElement("div");
-  typing.className = "bubble bot";
-  typing.style.opacity = "0.6";
-  typing.textContent = "печатает…";
-  chatEl.appendChild(typing);
-  chatEl.scrollTop = chatEl.scrollHeight;
+  setBusy(true);
+  const typing = addPlaceholder("печатает…");
   try {
     const data = await api("/api/message", { text });
     if (!data.error) {
@@ -213,9 +212,112 @@ async function sendMessage() {
     }
   } finally {
     typing.remove();
-    sendBtn.disabled = false;
+    setBusy(false);
   }
 }
+
+function setBusy(busy) {
+  sendBtn.disabled = busy;
+  micBtn.disabled = busy;
+}
+
+function addPlaceholder(text) {
+  const div = document.createElement("div");
+  div.className = "bubble bot";
+  div.style.opacity = "0.6";
+  div.textContent = text;
+  chatEl.appendChild(div);
+  chatEl.scrollTop = chatEl.scrollHeight;
+  return div;
+}
+
+function notify(text) {
+  if (tg && tg.showAlert) tg.showAlert(text); else alert(text);
+}
+
+// ---------- голосовые ----------
+const micBtn = document.getElementById("micBtn");
+let recorder = null;
+let recordChunks = [];
+let recordTimer = null;
+const MAX_RECORD_SECONDS = 300;
+
+function pickMimeType() {
+  const types = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
+  if (!window.MediaRecorder) return null;
+  return types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
+}
+
+async function startRecording() {
+  const mimeType = pickMimeType();
+  if (mimeType === null || !navigator.mediaDevices) {
+    notify("Запись голоса здесь недоступна — отправь голосовое прямо в чат с ботом.");
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    notify("Нет доступа к микрофону. Разреши его или отправь голосовое в чат с ботом.");
+    return;
+  }
+  recordChunks = [];
+  recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+  recorder.ondataavailable = (e) => { if (e.data.size) recordChunks.push(e.data); };
+  recorder.onstop = () => {
+    stream.getTracks().forEach((t) => t.stop());
+    const blob = new Blob(recordChunks, { type: recorder.mimeType || "audio/webm" });
+    recorder = null;
+    sendVoice(blob);
+  };
+  recorder.start();
+
+  let seconds = 0;
+  micBtn.classList.add("recording");
+  micBtn.textContent = "⏹ 0:00";
+  sendBtn.disabled = true;
+  recordTimer = setInterval(() => {
+    seconds += 1;
+    micBtn.textContent = `⏹ ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+    if (seconds >= MAX_RECORD_SECONDS) stopRecording();
+  }, 1000);
+}
+
+function stopRecording() {
+  clearInterval(recordTimer);
+  micBtn.classList.remove("recording");
+  micBtn.textContent = "🎤";
+  if (recorder && recorder.state !== "inactive") recorder.stop();
+}
+
+async function sendVoice(blob) {
+  if (!blob.size) { setBusy(false); return; }
+  setBusy(true);
+  const placeholder = addPlaceholder("🎤 распознаю голосовое…");
+  try {
+    const form = new FormData();
+    form.append("initData", initData);
+    form.append("audio", blob, "voice");
+    const resp = await fetch("/api/voice", { method: "POST", body: form });
+    const data = await resp.json();
+    if (data.error === "not_recognized") {
+      notify("Не смог разобрать голосовое. Попробуй ещё раз или напиши текстом.");
+    } else if (data.error) {
+      notify("Не удалось отправить голосовое. Попробуй ещё раз.");
+    }
+    await loadState();
+  } catch (e) {
+    notify("Не удалось отправить голосовое. Проверь интернет и попробуй ещё раз.");
+  } finally {
+    placeholder.remove();
+    setBusy(false);
+  }
+}
+
+micBtn.onclick = () => {
+  if (micBtn.disabled) return;
+  if (recorder) stopRecording(); else startRecording();
+};
 
 sendBtn.onclick = sendMessage;
 textInput.addEventListener("keydown", (e) => {

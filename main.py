@@ -37,6 +37,7 @@ def build_application() -> Application:
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.employee_free_text)
     )
+    application.add_handler(MessageHandler(filters.VOICE, handlers.employee_voice))
 
     tzinfo = ZoneInfo(TIMEZONE)
     scheduler.register_jobs(application.job_queue, tzinfo)

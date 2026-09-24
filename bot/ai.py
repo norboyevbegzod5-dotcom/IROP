@@ -2,7 +2,13 @@ import json
 
 from openai import OpenAI
 
-from bot.config import BOT_NAME, EMPLOYEES, OPENAI_API_KEY, OPENAI_MODEL
+from bot.config import (
+    BOT_NAME,
+    EMPLOYEES,
+    OPENAI_API_KEY,
+    OPENAI_MODEL,
+    OPENAI_TRANSCRIBE_MODEL,
+)
 
 _client = None
 
@@ -63,6 +69,22 @@ def _system_prompt() -> str:
         "description должен быть готовой формулировкой задачи, которую сотрудник получит "
         "в Telegram от лица руководителя — по-деловому и конкретно."
     )
+
+
+def transcribe(audio: bytes, filename: str):
+    """Расшифровка голосового в текст. filename нужен OpenAI, чтобы понять формат
+    (voice.ogg из Telegram, voice.webm/voice.mp4 из мини-аппа). None при ошибке."""
+    if not OPENAI_API_KEY or not audio:
+        return None
+    try:
+        resp = _get_client().audio.transcriptions.create(
+            model=OPENAI_TRANSCRIBE_MODEL,
+            file=(filename, audio),
+            prompt="Разговор сотрудника отдела продаж: клиенты, звонки, встречи, КП, договоры.",
+        )
+    except Exception:
+        return None
+    return (resp.text or "").strip() or None
 
 
 _HISTORY_LIMIT = 20

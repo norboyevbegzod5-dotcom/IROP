@@ -18,7 +18,8 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS employees (
     key TEXT PRIMARY KEY,
     full_name TEXT NOT NULL,
-    chat_id INTEGER UNIQUE
+    chat_id INTEGER UNIQUE,
+    rop_style TEXT NOT NULL DEFAULT 'motivator'
 );
 
 CREATE TABLE IF NOT EXISTS task_templates (
@@ -111,6 +112,7 @@ def init_db():
         conn.executescript(_SCHEMA)
         _migrate_task_instances(conn)
         _migrate_checkin_sessions(conn)
+        _migrate_employees(conn)
         _seed_employees(conn)
         _seed_templates(conn)
         _retire_old_templates(conn)
@@ -139,6 +141,14 @@ def _migrate_task_instances(conn):
            FROM task_instances_old"""
     )
     conn.execute("DROP TABLE task_instances_old")
+
+
+def _migrate_employees(conn):
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(employees)").fetchall()}
+    if "rop_style" not in cols:
+        conn.execute(
+            "ALTER TABLE employees ADD COLUMN rop_style TEXT NOT NULL DEFAULT 'motivator'"
+        )
 
 
 def _migrate_checkin_sessions(conn):
@@ -201,6 +211,11 @@ def get_employee(key: str):
 def all_employees():
     with get_conn() as conn:
         return conn.execute("SELECT * FROM employees ORDER BY key").fetchall()
+
+
+def set_rop_style(key: str, style: str):
+    with get_conn() as conn:
+        conn.execute("UPDATE employees SET rop_style = ? WHERE key = ?", (style, key))
 
 
 # ---------- task generation ----------

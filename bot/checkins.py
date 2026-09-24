@@ -46,10 +46,11 @@ def _turns(session) -> list:
     return [t if isinstance(t, dict) else {"sender": "employee", "text": t} for t in turns]
 
 
-def _context(employee_key: str, session) -> dict:
+def _context(employee, session) -> dict:
     return {
-        "previous_report": db.get_previous_report(employee_key, session["id"]),
-        "tasks": db.get_tasks_for_employee_on(employee_key, session["session_date"]),
+        "previous_report": db.get_previous_report(employee["key"], session["id"]),
+        "tasks": db.get_tasks_for_employee_on(employee["key"], session["session_date"]),
+        "style": employee["rop_style"],
     }
 
 
@@ -80,7 +81,7 @@ async def open_session(employee, kind: str, session_date: str, deadline_at):
 
     step = await asyncio.to_thread(
         ai.checkin_step,
-        employee["full_name"], TITLES[kind], GOALS[kind], [], _context(employee["key"], session),
+        employee["full_name"], TITLES[kind], GOALS[kind], [], _context(employee, session),
         False,
     )
     icon = "🌅" if kind == STANDUP else "🌙"
@@ -100,7 +101,7 @@ async def handle_answer(session, employee, text: str):
     step = await asyncio.to_thread(
         ai.checkin_step,
         employee["full_name"], TITLES[kind], GOALS[kind], turns,
-        _context(employee["key"], session), must_finish,
+        _context(employee, session), must_finish,
     )
 
     if step is None:

@@ -21,10 +21,12 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("tasks", handlers.tasks_today))
     application.add_handler(CommandHandler("status", handlers.status_admin))
     application.add_handler(CommandHandler("team", handlers.team_admin))
+    application.add_handler(CommandHandler("style", handlers.style_admin))
     application.add_handler(CallbackQueryHandler(handlers.on_register_callback, pattern=r"^reg:"))
     application.add_handler(CallbackQueryHandler(handlers.on_done_callback, pattern=r"^done:"))
     application.add_handler(CallbackQueryHandler(handlers.on_cancel_callback, pattern=r"^cancel:"))
     application.add_handler(CallbackQueryHandler(handlers.on_accept_callback, pattern=r"^accept:"))
+    application.add_handler(CallbackQueryHandler(handlers.on_style_callback, pattern=r"^style:"))
 
     if ADMIN_CHAT_ID is not None:
         application.add_handler(

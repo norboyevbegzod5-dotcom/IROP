@@ -128,13 +128,10 @@ async def _start_checkins(context: ContextTypes.DEFAULT_TYPE, kind: str):
         deadline_at = datetime.combine(today, datetime.min.time()).replace(hour=hh, minute=mm)
         deadline_at += timedelta(minutes=checkins.SCHEDULE[kind]["deadline_minutes"])
 
-        session_id = db.start_checkin_session(e.key, date_str, kind, deadline_at)
-        session = db.get_active_session(e.key, kind)
-        if session is None or session["id"] != session_id or session["question_index"] != 0:
+        text = await checkins.open_session(employee, kind, date_str, deadline_at)
+        if text is None:
             continue
 
-        question = checkins.QUESTIONS[kind][0]
-        text = texts.checkin_start(checkins.TITLES[kind], question)
         try:
             await context.bot.send_message(chat_id=employee["chat_id"], text=text)
         except (Forbidden, BadRequest):

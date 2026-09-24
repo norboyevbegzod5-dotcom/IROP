@@ -196,12 +196,24 @@ async function callStart() {
 
 async function sendMessage() {
   const text = textInput.value.trim();
-  if (!text) return;
+  if (!text || sendBtn.disabled) return;
   addBubble("employee", text);
   textInput.value = "";
-  const data = await api("/api/message", { text });
-  if (!data.error) {
-    await loadState();
+  sendBtn.disabled = true;
+  const typing = document.createElement("div");
+  typing.className = "bubble bot";
+  typing.style.opacity = "0.6";
+  typing.textContent = "печатает…";
+  chatEl.appendChild(typing);
+  chatEl.scrollTop = chatEl.scrollHeight;
+  try {
+    const data = await api("/api/message", { text });
+    if (!data.error) {
+      await loadState();
+    }
+  } finally {
+    typing.remove();
+    sendBtn.disabled = false;
   }
 }
 

@@ -1,5 +1,10 @@
-# Диалоговые чек-ины: РОП задаёт вопросы по одному, сотрудник отвечает текстом,
-# в конце готовый отчёт уходит руководителю.
+# Диалоговые чек-ины: AI сам ведёт разговор с сотрудником — задаёт вопросы по одному,
+# исходя из цели чек-ина и предыдущих ответов, а в конце готовый отчёт уходит руководителю.
+
+import asyncio
+import json
+
+from bot import ai, db
 
 STANDUP = "standup"
 EVENING = "evening"
@@ -9,20 +14,24 @@ TITLES = {
     EVENING: "Итоги дня",
 }
 
-QUESTIONS = {
-    STANDUP: [
-        "С какими клиентами ты вчера поговорил?",
-        "Что они ответили?",
-        "С какими брендами будешь разговаривать сегодня?",
-    ],
-    EVENING: [
-        "Сколько звонков ты сделал и кому?",
-        "Сколько встреч назначил?",
-        "Сколько КП отправил?",
-        "Сколько договоров отправил?",
-        "Сколько денег поступило от клиента?",
-    ],
+# Не вопросы, а цель разговора: что AI должен выяснить. Формулировки и порядок
+# вопросов AI выбирает сам.
+GOALS = {
+    STANDUP: (
+        "Утренний стендап. Выясни: с какими клиентами сотрудник вчера поговорил и что они "
+        "ответили (договорились о чём-то, отказали, попросили перезвонить), какие следующие "
+        "шаги по ним, и с какими клиентами/брендами он планирует говорить сегодня."
+    ),
+    EVENING: (
+        "Вечерние итоги дня. Выясни в цифрах: сколько звонков сделал и кому, сколько встреч "
+        "назначил, сколько КП отправил, сколько договоров отправил, сколько денег поступило "
+        "от клиентов. Сверься с утренним планом, если он есть: с кем из запланированных "
+        "удалось поговорить, а с кем нет и почему."
+    ),
 }
+
+# Страховка от бесконечного диалога: после стольких ответов сотрудника AI обязан закончить.
+MAX_EMPLOYEE_TURNS = 10
 
 # days_of_week: 0=Пн ... 6=Вс
 SCHEDULE = {
@@ -31,8 +40,79 @@ SCHEDULE = {
 }
 
 
-def build_report(full_name: str, kind: str, session_date: str, answers: list) -> str:
-    lines = [f"📋 {TITLES[kind]} — {full_name} ({session_date})"]
-    for i, (question, answer) in enumerate(zip(QUESTIONS[kind], answers), start=1):
-        lines.append(f"{i}) {question}\n— {answer}")
-    return "\n".join(lines)
+def _turns(session) -> list:
+    turns = json.loads(session["answers"])
+    # Сессии, начатые до перехода на AI, хранили просто список ответов-строк.
+    return [t if isinstance(t, dict) else {"sender": "employee", "text": t} for t in turns]
+
+
+def _context(employee_key: str, session) -> dict:
+    return {
+        "previous_report": db.get_previous_report(employee_key, session["id"]),
+        "tasks": db.get_tasks_for_employee_on(employee_key, session["session_date"]),
+    }
+
+
+def _fallback_opening(kind: str) -> str:
+    # Только на случай, если AI недоступен в момент старта.
+    if kind == STANDUP:
+        return f"🌅 {TITLES[kind]}\n\nРасскажи, с кем вчера поговорил и какие планы на сегодня?"
+    return f"🌙 {TITLES[kind]}\n\nКак прошёл день? Расскажи по цифрам: звонки, встречи, КП, договоры, деньги."
+
+
+def build_report(full_name: str, kind: str, session_date: str, body: str) -> str:
+    return f"📋 {TITLES[kind]} — {full_name} ({session_date})\n\n{body}"
+
+
+def _transcript_report(turns: list) -> str:
+    return "\n".join(
+        f"{'—' if t['sender'] == 'employee' else '❓'} {t['text']}" for t in turns
+    )
+
+
+async def open_session(employee, kind: str, session_date: str, deadline_at):
+    """Создаёт сессию и возвращает первое сообщение AI. None — если сессия уже шла
+    (первое сообщение было отправлено раньше)."""
+    db.start_checkin_session(employee["key"], session_date, kind, deadline_at)
+    session = db.get_active_session(employee["key"], kind)
+    if session is None or _turns(session):
+        return None
+
+    step = await asyncio.to_thread(
+        ai.checkin_step,
+        employee["full_name"], TITLES[kind], GOALS[kind], [], _context(employee["key"], session),
+        False,
+    )
+    icon = "🌅" if kind == STANDUP else "🌙"
+    text = f"{icon} {TITLES[kind]}\n\n{step['message']}" if step else _fallback_opening(kind)
+    db.append_checkin_turn(session["id"], "bot", text)
+    return text
+
+
+async def handle_answer(session, employee, text: str):
+    """Принимает ответ сотрудника. Возвращает (сообщение_сотруднику, отчёт_или_None):
+    отчёт не None, когда AI решил, что всё выяснил, и сессия завершена."""
+    turns = db.append_checkin_turn(session["id"], "employee", text)
+    kind = session["kind"]
+    employee_turns = sum(1 for t in turns if t["sender"] == "employee")
+    must_finish = employee_turns >= MAX_EMPLOYEE_TURNS
+
+    step = await asyncio.to_thread(
+        ai.checkin_step,
+        employee["full_name"], TITLES[kind], GOALS[kind], turns,
+        _context(employee["key"], session), must_finish,
+    )
+
+    if step is None:
+        if not must_finish:
+            return "Не смог обработать ответ — напиши, пожалуйста, ещё раз.", None
+        step = {"message": "Спасибо, принято ✅", "finished": True, "report": None}
+
+    if not step.get("finished"):
+        db.append_checkin_turn(session["id"], "bot", step["message"])
+        return step["message"], None
+
+    body = step.get("report") or _transcript_report(turns)
+    db.complete_session(session["id"], body)
+    report = build_report(employee["full_name"], kind, session["session_date"], body)
+    return step["message"] or "Спасибо, принято ✅", report

@@ -1,6 +1,8 @@
+import asyncio
 from datetime import date, datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ChatAction
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import ContextTypes
 
@@ -267,6 +269,30 @@ async def on_accept_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             pass
 
 
+async def ai_chat_reply(bot, employee, text: str) -> str:
+    """Отвечает сотруднику через AI вне чек-ина. Сообщение сотрудника уже должно быть
+    записано в chat_messages. Логирует ответ и пересылает вопрос+ответ руководителю."""
+    today_str = date.today().isoformat()
+    history = db.get_messages_for_day(employee["key"], today_str)
+    tasks = db.get_tasks_for_employee_on(employee["key"], today_str)
+
+    reply = await asyncio.to_thread(ai.employee_reply, employee["full_name"], history, tasks)
+    if reply is None:
+        reply = texts.employee_ai_unavailable()
+    db.log_message(employee["key"], today_str, "bot", reply)
+
+    if ADMIN_CHAT_ID is not None:
+        try:
+            await bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=texts.employee_ai_dialog_admin(employee["full_name"], text, reply),
+            )
+        except (Forbidden, BadRequest):
+            pass
+
+    return reply
+
+
 async def employee_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if _is_admin(chat_id):
@@ -280,35 +306,25 @@ async def employee_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if employee is None:
         return
 
+    session = db.get_active_session(employee["key"])
+    if session is None:
+        db.log_message(employee["key"], date.today().isoformat(), "employee", text)
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        reply = await ai_chat_reply(context.bot, employee, text)
+        await update.message.reply_text(reply, reply_markup=_webapp_keyboard())
+        return
+
     if WEBAPP_URL:
         await update.message.reply_text(
             "Отвечай, пожалуйста, в чате мини-приложения 👇", reply_markup=_webapp_keyboard()
         )
         return
 
-    session = db.get_active_session(employee["key"])
-    if session is None:
-        return
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    reply, report = await checkins.handle_answer(session, employee, text)
+    await update.message.reply_text(reply)
 
-    updated = db.record_answer(session["id"], text)
-    if updated is None:
-        return
-
-    kind = session["kind"]
-    questions = checkins.QUESTIONS[kind]
-
-    if updated["question_index"] < len(questions):
-        next_question = questions[updated["question_index"]]
-        await update.message.reply_text(next_question)
-        return
-
-    db.complete_session(session["id"])
-    report = checkins.build_report(
-        employee["full_name"], kind, session["session_date"], updated["answers"]
-    )
-    await update.message.reply_text(texts.checkin_thanks())
-
-    if ADMIN_CHAT_ID is not None:
+    if report is not None and ADMIN_CHAT_ID is not None:
         try:
             await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=report)
         except (Forbidden, BadRequest):

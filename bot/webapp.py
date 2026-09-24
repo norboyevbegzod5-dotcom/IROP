@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta
 
 from aiohttp import web
 
-from bot import checkins, db, texts
+from bot import checkins, db, handlers
 from bot.config import ADMIN_CHAT_ID
 from bot.telegram_auth import get_user, validate_init_data
 
@@ -81,11 +81,9 @@ async def handle_start(request: web.Request):
 
     deadline_minutes = checkins.SCHEDULE[kind]["deadline_minutes"]
     deadline_at = datetime.now() + timedelta(minutes=deadline_minutes)
-    db.start_checkin_session(employee["key"], today, kind, deadline_at)
-
-    question = checkins.QUESTIONS[kind][0]
-    bot_text = texts.checkin_start(checkins.TITLES[kind], question)
-    db.log_message(employee["key"], today, "bot", bot_text)
+    opening = await checkins.open_session(employee, kind, today, deadline_at)
+    if opening is not None:
+        db.log_message(employee["key"], today, "bot", opening)
 
     return web.json_response({"ok": True})
 
@@ -107,26 +105,13 @@ async def handle_message(request: web.Request):
     session = db.get_active_session(employee["key"])
 
     if session is not None:
-        updated = db.record_answer(session["id"], text)
-        kind = session["kind"]
-        questions = checkins.QUESTIONS[kind]
-
-        if updated["question_index"] < len(questions):
-            next_question = questions[updated["question_index"]]
-            db.log_message(employee["key"], today, "bot", next_question)
-        else:
-            db.complete_session(session["id"])
-            db.log_message(employee["key"], today, "bot", texts.checkin_thanks())
-            report = checkins.build_report(
-                employee["full_name"], kind, session["session_date"], updated["answers"]
-            )
-            if ADMIN_CHAT_ID is not None:
-                await bot.send_message(chat_id=ADMIN_CHAT_ID, text=report)
+        reply, report = await checkins.handle_answer(session, employee, text)
+        db.log_message(employee["key"], today, "bot", reply)
+        if report is not None and ADMIN_CHAT_ID is not None:
+            await bot.send_message(chat_id=ADMIN_CHAT_ID, text=report)
     else:
-        if ADMIN_CHAT_ID is not None:
-            await bot.send_message(
-                chat_id=ADMIN_CHAT_ID, text=f"💬 {employee['full_name']}: {text}"
-            )
+        reply = await handlers.ai_chat_reply(bot, employee, text)
+        return web.json_response({"ok": True, "reply": reply})
 
     return web.json_response({"ok": True})
 

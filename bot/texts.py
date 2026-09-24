@@ -122,20 +122,20 @@ def ai_error() -> str:
     return "Не смог обработать через AI. Проверь OPENAI_API_KEY или переформулируй задачу."
 
 
+def employee_ai_unavailable() -> str:
+    return "Сейчас не могу ответить — передал сообщение руководителю, он ответит сам."
+
+
+def employee_ai_dialog_admin(full_name: str, question: str, answer: str) -> str:
+    return f"💬 {full_name}: {question}\n\n🤖 Ответ AI: {answer}"
+
+
 def task_cancelled_employee(title: str) -> str:
     return f"🚫 Задача «{title}» отменена руководителем, можешь не выполнять."
 
 
 def task_already_uncancellable() -> str:
     return "Эту задачу уже нельзя отменить (выполнена или уже отменена)."
-
-
-def checkin_start(title: str, question: str) -> str:
-    return f"🌅 {title}\n\n{question}"
-
-
-def checkin_thanks() -> str:
-    return "Спасибо, принято ✅"
 
 
 def checkin_overdue_employee(title: str) -> str:

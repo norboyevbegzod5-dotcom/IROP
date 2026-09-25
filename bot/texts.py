@@ -172,11 +172,29 @@ def employee_ai_unavailable() -> str:
     return "Сейчас не могу ответить — передал сообщение руководителю, он ответит сам."
 
 
-def employee_ai_dialog_admin(full_name: str, question: str, answer: str, can_correct: bool = False) -> str:
+def employee_ai_dialog_admin(
+    full_name: str, question: str, answer: str, can_correct: bool = False, escalated: bool = False
+) -> str:
     text = f"💬 {full_name}: {question}\n\n🤖 Ответ AI: {answer}"
+    if escalated:
+        text = f"❗ Нужно твоё решение\n\n{text}"
     if can_correct:
         text += "\n\n✍️ Ответь на это сообщение своим вариантом — AI запомнит, как отвечаешь ты."
     return text
+
+
+def copies_status(on: bool) -> str:
+    if on:
+        return (
+            "🔔 Копии диалогов сотрудников с AI включены: ты видишь каждый вопрос и ответ AI "
+            "и можешь исправить ответ, ответив на копию своим вариантом."
+        )
+    return (
+        "🔕 Копии диалогов сотрудников с AI выключены. Отчёты стендапа и итогов дня, "
+        "задачи и важные уведомления приходят как обычно, а о работе команды можно просто "
+        "спросить меня в чате: «сколько встреч сегодня сделали ребята?».\n"
+        "Включи копии, если хочешь исправлять ответы AI и так обучать его."
+    )
 
 
 def admin_panel_link(url: str) -> str:

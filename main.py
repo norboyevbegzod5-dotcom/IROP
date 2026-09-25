@@ -23,6 +23,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("team", handlers.team_admin))
     application.add_handler(CommandHandler("style", handlers.style_admin))
     application.add_handler(CommandHandler("admin", handlers.admin_panel))
+    application.add_handler(CommandHandler("copies", handlers.copies_admin))
     application.add_handler(CommandHandler("learn", handlers.learn_admin))
     application.add_handler(CommandHandler("knowledge", handlers.knowledge_admin))
     application.add_handler(CommandHandler("forget", handlers.forget_admin))
@@ -34,6 +35,7 @@ def build_application() -> Application:
     application.add_handler(CallbackQueryHandler(handlers.on_style_callback, pattern=r"^style:"))
     application.add_handler(CallbackQueryHandler(handlers.on_reopen_callback, pattern=r"^reopen:"))
     application.add_handler(CallbackQueryHandler(handlers.on_sendfix_callback, pattern=r"^sendfix:"))
+    application.add_handler(CallbackQueryHandler(handlers.on_copies_callback, pattern=r"^copies:"))
 
     if ADMIN_CHAT_ID is not None:
         application.add_handler(

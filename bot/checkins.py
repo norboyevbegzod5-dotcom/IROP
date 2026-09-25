@@ -4,7 +4,7 @@
 import asyncio
 import json
 
-from bot import ai, db, knowledge
+from bot import ai, db, knowledge, stats
 
 STANDUP = "standup"
 EVENING = "evening"
@@ -23,10 +23,12 @@ GOALS = {
         "шаги по ним, и с какими клиентами/брендами он планирует говорить сегодня."
     ),
     EVENING: (
-        "Вечерние итоги дня. Выясни в цифрах: сколько звонков сделал и кому, сколько встреч "
-        "назначил, сколько КП отправил, сколько договоров отправил, сколько денег поступило "
-        "от клиентов. Сверься с утренним планом, если он есть: с кем из запланированных "
-        "удалось поговорить, а с кем нет и почему."
+        "Вечерние итоги дня. Выясни точные цифры: сколько звонков сделал; сколько встреч "
+        "проведено и сколько новых назначено; сколько КП отправил и на какую общую сумму; "
+        "сколько договоров подписано и на какую сумму; сколько денег фактически поступило "
+        "от клиентов; сколько новых клиентов подключено. Общие слова («много», «нормально», "
+        "«около 30») не принимай — нужна точная цифра. Сверься с утренним планом: с кем из "
+        "запланированных удалось поговорить, а с кем нет и почему."
     ),
 }
 
@@ -53,6 +55,8 @@ def _context(employee, session, query: str = "") -> dict:
         "style": employee["rop_style"],
         # База знаний и образцы руководителя, подобранные под последний ответ сотрудника.
         "knowledge": knowledge.prompt_block(query),
+        # Планы из админки и выполнение с начала месяца.
+        "plan": stats.plan_context(employee["key"]),
     }
 
 
@@ -61,6 +65,19 @@ def _fallback_opening(kind: str) -> str:
     if kind == STANDUP:
         return f"🌅 {TITLES[kind]}\n\nРасскажи, с кем вчера поговорил и какие планы на сегодня?"
     return f"🌙 {TITLES[kind]}\n\nКак прошёл день? Расскажи по цифрам: звонки, встречи, КП, договоры, деньги."
+
+
+def _clean_metrics(raw: dict) -> dict:
+    """Только известные поля, только неотрицательные целые; остальное — None."""
+    clean = {}
+    for field in db.METRIC_FIELDS:
+        value = raw.get(field)
+        try:
+            value = int(value) if value is not None else None
+        except (TypeError, ValueError):
+            value = None
+        clean[field] = value if value is None or value >= 0 else None
+    return clean
 
 
 def build_report(full_name: str, kind: str, session_date: str, body: str) -> str:
@@ -117,5 +134,7 @@ async def handle_answer(session, employee, text: str):
 
     body = step.get("report") or _transcript_report(turns)
     db.complete_session(session["id"], body)
+    if kind == EVENING and isinstance(step.get("metrics"), dict):
+        db.save_daily_metrics(employee["key"], session["session_date"], _clean_metrics(step["metrics"]))
     report = build_report(employee["full_name"], kind, session["session_date"], body)
     return step["message"] or "Спасибо, принято ✅", report

@@ -6,7 +6,7 @@ from aiohttp import web
 
 from telegram.error import BadRequest, Forbidden
 
-from bot import ai, checkins, db, handlers, texts
+from bot import admin, ai, checkins, db, handlers, texts
 from bot.config import ADMIN_CHAT_ID, AUTO_TASK_OVERDUE_GRACE_HOURS
 from bot.telegram_auth import get_user, validate_init_data
 
@@ -228,6 +228,7 @@ def build_app(bot) -> web.Application:
     app.router.add_post("/api/voice", handle_voice)
     app.router.add_post("/api/tasks", handle_tasks)
     app.router.add_post("/api/tasks/accept", handle_task_accept)
+    admin.register(app)
     return app
 
 

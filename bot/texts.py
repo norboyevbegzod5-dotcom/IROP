@@ -179,6 +179,18 @@ def employee_ai_dialog_admin(full_name: str, question: str, answer: str, can_cor
     return text
 
 
+def admin_panel_link(url: str) -> str:
+    return (
+        "📊 Админка: планы сотрудников и статистика по их отчётам.\n\n"
+        f"{url}\n\n"
+        "Это личная ссылка без пароля — не пересылай её сотрудникам."
+    )
+
+
+def admin_panel_no_url() -> str:
+    return "Админка доступна, когда у бота есть публичный адрес (WEBAPP_URL / Render)."
+
+
 # ---------- обучение AI ----------
 
 def learn_prompt() -> str:

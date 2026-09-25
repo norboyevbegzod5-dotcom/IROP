@@ -22,6 +22,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("status", handlers.status_admin))
     application.add_handler(CommandHandler("team", handlers.team_admin))
     application.add_handler(CommandHandler("style", handlers.style_admin))
+    application.add_handler(CommandHandler("admin", handlers.admin_panel))
     application.add_handler(CommandHandler("learn", handlers.learn_admin))
     application.add_handler(CommandHandler("knowledge", handlers.knowledge_admin))
     application.add_handler(CommandHandler("forget", handlers.forget_admin))

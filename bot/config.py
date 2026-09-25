@@ -1,3 +1,4 @@
+import hashlib
 import os
 import time
 from dataclasses import dataclass
@@ -15,6 +16,13 @@ if hasattr(time, "tzset"):
     time.tzset()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+
+# Секрет в адресе админки (/admin/<token>): логина нет, но адрес не угадать.
+# По умолчанию выводится из BOT_TOKEN, так что настраивать ничего не нужно;
+# задайте ADMIN_PANEL_TOKEN, чтобы сменить ссылку (старая перестанет работать).
+ADMIN_PANEL_TOKEN = os.getenv("ADMIN_PANEL_TOKEN") or hashlib.sha256(
+    f"{BOT_TOKEN}:admin-panel".encode()
+).hexdigest()[:24]
 
 _admin_chat_id = os.getenv("ADMIN_CHAT_ID")
 ADMIN_CHAT_ID = int(_admin_chat_id) if _admin_chat_id else None

@@ -73,6 +73,26 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     text TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+-- Обучение AI руководителем: kind='fact' — запись базы знаний (text),
+-- kind='example' — образец ответа руководителя (question -> text).
+CREATE TABLE IF NOT EXISTS knowledge (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    question TEXT,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+-- Копии диалогов «вопрос сотрудника → ответ AI», отправленные руководителю:
+-- по admin_message_id узнаём, на какой диалог руководитель ответил исправлением.
+CREATE TABLE IF NOT EXISTS ai_dialogs (
+    admin_message_id INTEGER PRIMARY KEY,
+    employee_key TEXT NOT NULL,
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 _TASK_INSTANCES_FRESH_SQL = """
@@ -600,3 +620,48 @@ def get_messages_for_day(employee_key: str, message_date: str):
                ORDER BY id""",
             (employee_key, message_date),
         ).fetchall()
+
+
+# ---------- обучение AI (база знаний и образцы ответов) ----------
+
+def add_knowledge(kind: str, text: str, question: str = None) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO knowledge (kind, question, text, created_at) VALUES (?, ?, ?, ?)",
+            (kind, question, text, datetime.now().isoformat(timespec="seconds")),
+        )
+        return cur.lastrowid
+
+
+def all_knowledge():
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM knowledge ORDER BY id").fetchall()
+
+
+def get_knowledge(knowledge_id: int):
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM knowledge WHERE id = ?", (knowledge_id,)).fetchone()
+
+
+def delete_knowledge(knowledge_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM knowledge WHERE id = ?", (knowledge_id,))
+        return cur.rowcount > 0
+
+
+def save_ai_dialog(admin_message_id: int, employee_key: str, question: str, answer: str):
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO ai_dialogs
+               (admin_message_id, employee_key, question, answer, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (admin_message_id, employee_key, question, answer,
+             datetime.now().isoformat(timespec="seconds")),
+        )
+
+
+def get_ai_dialog(admin_message_id: int):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM ai_dialogs WHERE admin_message_id = ?", (admin_message_id,)
+        ).fetchone()

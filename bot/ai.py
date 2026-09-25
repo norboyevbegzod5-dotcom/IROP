@@ -92,12 +92,16 @@ def transcribe(audio: bytes, filename: str):
 _HISTORY_LIMIT = 20
 
 
-def _employee_system_prompt(full_name: str, tasks, style: str) -> str:
+def _with_knowledge(prompt: str, knowledge_block: str) -> str:
+    return f"{prompt}\n\n{knowledge_block}" if knowledge_block else prompt
+
+
+def _employee_system_prompt(full_name: str, tasks, style: str, knowledge_block: str) -> str:
     if tasks:
         task_lines = "\n".join(f"- {t['title']} (статус: {t['status']})" for t in tasks)
     else:
         task_lines = "- задач на сегодня нет"
-    return (
+    return _with_knowledge(
         f"Ты — {BOT_NAME}, AI-ассистент РОПа (руководителя отдела продаж). С тобой в рабочем "
         f"чате пишет сотрудник отдела продаж {full_name}. Помогай ему по работе: как вести "
         "переговоры и отрабатывать возражения, как написать сообщение или КП клиенту, как "
@@ -106,19 +110,20 @@ def _employee_system_prompt(full_name: str, tasks, style: str) -> str:
         "(деньги, скидки, увольнение, конфликт), скажи, что передал вопрос руководителю. "
         "Не выдумывай факты о клиентах, ценах и условиях компании.\n\n"
         f"{styles.PROMPTS[styles.normalize(style)]}\n\n"
-        f"Задачи сотрудника на сегодня:\n{task_lines}"
+        f"Задачи сотрудника на сегодня:\n{task_lines}",
+        knowledge_block,
     )
 
 
-def employee_reply(full_name: str, history, tasks, style: str):
+def employee_reply(full_name: str, history, tasks, style: str, knowledge_block: str = ""):
     """Ответ AI сотруднику. history — сообщения чата за сегодня (sender, text),
-    последнее из них — новое сообщение сотрудника. None, если AI недоступен."""
+    последнее из них — новое сообщение сотрудника. knowledge_block — база знаний и
+    образцы ответов руководителя (bot/knowledge.py). None, если AI недоступен."""
     if not OPENAI_API_KEY:
         return None
 
-    messages = [
-        {"role": "system", "content": _employee_system_prompt(full_name, tasks, style)}
-    ]
+    system = _employee_system_prompt(full_name, tasks, style, knowledge_block)
+    messages = [{"role": "system", "content": system}]
     for m in list(history)[-_HISTORY_LIMIT:]:
         role = "user" if m["sender"] == "employee" else "assistant"
         messages.append({"role": role, "content": m["text"]})
@@ -187,6 +192,7 @@ def _checkin_system_prompt(full_name, title, goal, context, must_finish) -> str:
         f"Предыдущий отчёт сотрудника:\n{previous}\n\n"
         f"Задачи сотрудника на сегодня:\n{task_lines}"
     )
+    prompt = _with_knowledge(prompt, context.get("knowledge") or "")
     if must_finish:
         prompt += "\n\nВопросов уже достаточно: завершай сейчас (finished=true) с отчётом."
     return prompt

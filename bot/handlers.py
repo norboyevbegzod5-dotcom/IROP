@@ -6,7 +6,7 @@ from telegram.constants import ChatAction
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import ContextTypes
 
-from bot import ai, checkins, db, styles, texts
+from bot import ai, checkins, db, knowledge, styles, texts
 from bot.config import (
     ADMIN_CHAT_ID,
     AUTO_TASK_DEFAULT_DEADLINE,
@@ -41,9 +41,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if _is_admin(chat_id):
         await update.message.reply_text(
-            f"Привет, руководитель. Я {BOT_NAME}. Команды: /status — статус за сегодня, "
-            f"/team — кто из команды подключился, /style — характер AI-РОПа "
-            f"(строгий или мотиватор) для каждого сотрудника."
+            f"Привет, руководитель. Я {BOT_NAME}. Команды:\n"
+            f"/status — статус за сегодня\n"
+            f"/team — кто из команды подключился\n"
+            f"/style — характер AI-РОПа (строгий или мотиватор)\n"
+            f"/learn — научить AI: факты, цены, скрипты, ответы на возражения\n"
+            f"/knowledge — что AI уже знает; /forget номер — удалить запись\n\n"
+            f"Чтобы AI отвечал как ты — отвечай на копии его диалогов своим вариантом."
         )
         return
 
@@ -216,6 +220,135 @@ async def on_style_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass  # ничего не изменилось — Telegram не даёт отредактировать тем же текстом
 
 
+# ---------- обучение AI ----------
+
+_AWAITING_KNOWLEDGE = "awaiting_knowledge"
+_TELEGRAM_LIMIT = 4000  # с запасом до 4096
+
+
+def _save_fact(text: str) -> str:
+    knowledge_id = db.add_knowledge(knowledge.FACT, text.strip())
+    total = sum(1 for r in db.all_knowledge() if r["kind"] == knowledge.FACT)
+    return texts.learn_saved(knowledge_id, total)
+
+
+async def learn_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_chat.id):
+        await update.message.reply_text(texts.admin_only())
+        return
+
+    # /learn текст — сохранить сразу; просто /learn — ждём следующее сообщение.
+    text = " ".join(context.args).strip() if context.args else ""
+    if text:
+        await update.message.reply_text(_save_fact(text))
+        return
+    context.user_data[_AWAITING_KNOWLEDGE] = True
+    await update.message.reply_text(texts.learn_prompt())
+
+
+async def cancel_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_chat.id):
+        return
+    context.user_data.pop(_AWAITING_KNOWLEDGE, None)
+    await update.message.reply_text(texts.learn_cancelled())
+
+
+def _short(text: str, limit: int = 160) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+async def knowledge_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_chat.id):
+        await update.message.reply_text(texts.admin_only())
+        return
+
+    rows = db.all_knowledge()
+    facts = [r for r in rows if r["kind"] == knowledge.FACT]
+    examples = [r for r in rows if r["kind"] == knowledge.EXAMPLE]
+    if not rows:
+        await update.message.reply_text(texts.knowledge_empty())
+        return
+
+    lines = []
+    if facts:
+        lines.append(f"📚 База знаний ({len(facts)}):")
+        lines += [f"#{r['id']} {_short(r['text'])}" for r in facts]
+    if examples:
+        lines.append(f"\n🎓 Твои образцы ответов ({len(examples)}):")
+        lines += [
+            f"#{r['id']} «{_short(r['question'], 70)}» → {_short(r['text'], 110)}"
+            for r in examples
+        ]
+    lines.append("\nДобавить — /learn, удалить — /forget номер")
+
+    # Длинный список режем на несколько сообщений по лимиту Telegram.
+    chunk = ""
+    for line in lines:
+        if len(chunk) + len(line) + 1 > _TELEGRAM_LIMIT:
+            await update.message.reply_text(chunk)
+            chunk = ""
+        chunk += line + "\n"
+    if chunk:
+        await update.message.reply_text(chunk)
+
+
+async def forget_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_chat.id):
+        await update.message.reply_text(texts.admin_only())
+        return
+    try:
+        knowledge_id = int(context.args[0].lstrip("#"))
+    except (IndexError, ValueError, AttributeError):
+        await update.message.reply_text(texts.forget_usage())
+        return
+    if db.delete_knowledge(knowledge_id):
+        await update.message.reply_text(texts.forget_done(knowledge_id))
+    else:
+        await update.message.reply_text(texts.forget_not_found(knowledge_id))
+
+
+async def _save_correction(update: Update, dialog, text: str):
+    """Руководитель ответил на копию диалога своим вариантом — сохраняем как образец."""
+    knowledge_id = db.add_knowledge(knowledge.EXAMPLE, text.strip(), question=dialog["question"])
+    employee = db.get_employee(dialog["employee_key"])
+    keyboard = None
+    if employee and employee["chat_id"]:
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("📨 Отправить сотруднику", callback_data=f"sendfix:{knowledge_id}:{employee['key']}")]]
+        )
+    await update.message.reply_text(
+        texts.example_saved(knowledge_id, employee["full_name"] if employee else "сотруднику"),
+        reply_markup=keyboard,
+    )
+
+
+async def on_sendfix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not _is_admin(query.message.chat_id):
+        await query.answer(texts.admin_only(), show_alert=True)
+        return
+
+    _, knowledge_id, employee_key = query.data.split(":", 2)
+    entry = db.get_knowledge(int(knowledge_id))
+    employee = db.get_employee(employee_key)
+    if entry is None or employee is None or not employee["chat_id"]:
+        await query.answer("Не получилось отправить.", show_alert=True)
+        return
+
+    message = texts.correction_to_employee(entry["text"])
+    db.log_message(employee["key"], date.today().isoformat(), "bot", message)
+    try:
+        await context.bot.send_message(chat_id=employee["chat_id"], text=message)
+    except (Forbidden, BadRequest):
+        await query.answer("Сотрудник недоступен.", show_alert=True)
+        return
+
+    await query.answer("Отправлено")
+    await query.edit_message_reply_markup(reply_markup=None)
+    await query.message.reply_text(f"📨 Отправил {employee['full_name']}.")
+
+
 async def admin_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not _is_admin(chat_id):
@@ -224,6 +357,21 @@ async def admin_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if not text:
         return
+
+    # 1) Ждём запись для базы знаний после /learn.
+    if context.user_data.pop(_AWAITING_KNOWLEDGE, False):
+        await update.message.reply_text(_save_fact(text))
+        return
+
+    # 2) Ответ на копию диалога «сотрудник → AI» — это исправление ответа AI.
+    reply_to = update.message.reply_to_message
+    if reply_to is not None:
+        dialog = db.get_ai_dialog(reply_to.message_id)
+        if dialog is not None:
+            await _save_correction(update, dialog, text)
+            return
+
+    # 3) Иначе — поручение сотруднику.
 
     parsed = ai.parse_task(text)
     if parsed is None:
@@ -355,19 +503,27 @@ async def ai_chat_reply(bot, employee, text: str) -> str:
     history = db.get_messages_for_day(employee["key"], today_str)
     tasks = db.get_tasks_for_employee_on(employee["key"], today_str)
 
+    knowledge_block = knowledge.prompt_block(text)
     reply = await asyncio.to_thread(
-        ai.employee_reply, employee["full_name"], history, tasks, employee["rop_style"]
+        ai.employee_reply,
+        employee["full_name"], history, tasks, employee["rop_style"], knowledge_block,
     )
-    if reply is None:
+    ai_answered = reply is not None
+    if not ai_answered:
         reply = texts.employee_ai_unavailable()
     db.log_message(employee["key"], today_str, "bot", reply)
 
     if ADMIN_CHAT_ID is not None:
         try:
-            await bot.send_message(
+            copy = await bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
-                text=texts.employee_ai_dialog_admin(employee["full_name"], text, reply),
+                text=texts.employee_ai_dialog_admin(
+                    employee["full_name"], text, reply, can_correct=ai_answered
+                ),
             )
+            if ai_answered:
+                # Руководитель может ответить на эту копию своим вариантом — так AI учится.
+                db.save_ai_dialog(copy.message_id, employee["key"], text, reply)
         except (Forbidden, BadRequest):
             pass
 

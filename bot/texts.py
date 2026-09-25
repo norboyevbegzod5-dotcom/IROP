@@ -172,8 +172,63 @@ def employee_ai_unavailable() -> str:
     return "Сейчас не могу ответить — передал сообщение руководителю, он ответит сам."
 
 
-def employee_ai_dialog_admin(full_name: str, question: str, answer: str) -> str:
-    return f"💬 {full_name}: {question}\n\n🤖 Ответ AI: {answer}"
+def employee_ai_dialog_admin(full_name: str, question: str, answer: str, can_correct: bool = False) -> str:
+    text = f"💬 {full_name}: {question}\n\n🤖 Ответ AI: {answer}"
+    if can_correct:
+        text += "\n\n✍️ Ответь на это сообщение своим вариантом — AI запомнит, как отвечаешь ты."
+    return text
+
+
+# ---------- обучение AI ----------
+
+def learn_prompt() -> str:
+    return (
+        "📚 Пришли одним сообщением то, что AI должен знать: факт о компании, цены, "
+        "условия, скрипт или как отвечать на возражение. Можно переслать готовый текст.\n"
+        "Отмена — /cancel"
+    )
+
+
+def learn_saved(knowledge_id: int, total: int) -> str:
+    return f"📚 Запомнил (#{knowledge_id}). Записей в базе знаний: {total}. Список — /knowledge"
+
+
+def learn_cancelled() -> str:
+    return "Ок, ничего не сохранил."
+
+
+def example_saved(knowledge_id: int, full_name: str) -> str:
+    return (
+        f"🎓 Запомнил твой ответ как образец (#{knowledge_id}). В похожих ситуациях AI будет "
+        f"отвечать так же. Отправить этот ответ {full_name}?"
+    )
+
+
+def correction_to_employee(text: str) -> str:
+    return f"💬 Руководитель: {text}"
+
+
+def forget_usage() -> str:
+    return "Напиши номер записи: /forget 12. Номера — в /knowledge."
+
+
+def forget_done(knowledge_id: int) -> str:
+    return f"🗑 Удалил запись #{knowledge_id}."
+
+
+def forget_not_found(knowledge_id: int) -> str:
+    return f"Записи #{knowledge_id} нет. Номера — в /knowledge."
+
+
+def knowledge_empty() -> str:
+    return (
+        "📚 База знаний пока пустая.\n\n"
+        "Как обучать AI:\n"
+        "• /learn — добавить факт, цены, скрипт, ответ на возражение;\n"
+        "• ответь на копию диалога «💬 сотрудник → 🤖 ответ AI» своим вариантом — AI "
+        "запомнит его как образец;\n"
+        "• /forget 12 — удалить запись."
+    )
 
 
 def task_cancelled_employee(title: str) -> str:

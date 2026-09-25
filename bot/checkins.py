@@ -4,7 +4,7 @@
 import asyncio
 import json
 
-from bot import ai, db
+from bot import ai, db, knowledge
 
 STANDUP = "standup"
 EVENING = "evening"
@@ -46,11 +46,13 @@ def _turns(session) -> list:
     return [t if isinstance(t, dict) else {"sender": "employee", "text": t} for t in turns]
 
 
-def _context(employee, session) -> dict:
+def _context(employee, session, query: str = "") -> dict:
     return {
         "previous_report": db.get_previous_report(employee["key"], session["id"]),
         "tasks": db.get_tasks_for_employee_on(employee["key"], session["session_date"]),
         "style": employee["rop_style"],
+        # База знаний и образцы руководителя, подобранные под последний ответ сотрудника.
+        "knowledge": knowledge.prompt_block(query),
     }
 
 
@@ -101,7 +103,7 @@ async def handle_answer(session, employee, text: str):
     step = await asyncio.to_thread(
         ai.checkin_step,
         employee["full_name"], TITLES[kind], GOALS[kind], turns,
-        _context(employee, session), must_finish,
+        _context(employee, session, text), must_finish,
     )
 
     if step is None:

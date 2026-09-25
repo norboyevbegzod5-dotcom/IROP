@@ -1,7 +1,7 @@
 import asyncio
 from datetime import date, datetime, timedelta
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.constants import ChatAction
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import ContextTypes
@@ -42,6 +42,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if _is_admin(chat_id):
         await update.message.reply_text(
             f"Привет, руководитель. Я {BOT_NAME}. Команды:\n"
+            f"/admin — админка: планы и статистика по отчётам\n"
             f"/status — статус за сегодня\n"
             f"/team — кто из команды подключился\n"
             f"/style — характер AI-РОПа (строгий или мотиватор)\n"
@@ -218,6 +219,26 @@ async def on_style_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=keyboard)
     except BadRequest:
         pass  # ничего не изменилось — Telegram не даёт отредактировать тем же текстом
+
+
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_chat.id):
+        await update.message.reply_text(texts.admin_only())
+        return
+
+    from bot import admin  # локально: admin тянет aiohttp, handlers он нужен только тут
+
+    url = admin.panel_url()
+    if not url:
+        await update.message.reply_text(texts.admin_panel_no_url())
+        return
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("📊 Открыть в Telegram", web_app=WebAppInfo(url=url))],
+            [InlineKeyboardButton("🌐 Открыть в браузере", url=url)],
+        ]
+    )
+    await update.message.reply_text(texts.admin_panel_link(url), reply_markup=keyboard)
 
 
 # ---------- обучение AI ----------

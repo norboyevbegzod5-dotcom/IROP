@@ -84,6 +84,32 @@ CREATE TABLE IF NOT EXISTS knowledge (
     created_at TEXT NOT NULL
 );
 
+-- Планы, которые руководитель задаёт в админке.
+CREATE TABLE IF NOT EXISTS plans (
+    employee_key TEXT PRIMARY KEY,
+    calls_daily INTEGER,
+    sales_monthly INTEGER,
+    connections_monthly INTEGER,
+    updated_at TEXT NOT NULL
+);
+
+-- Цифры за день, которые AI извлёк из вечернего отчёта сотрудника (для статистики).
+CREATE TABLE IF NOT EXISTS daily_metrics (
+    employee_key TEXT NOT NULL,
+    metric_date TEXT NOT NULL,
+    calls INTEGER,
+    meetings_held INTEGER,
+    meetings_new INTEGER,
+    kp_count INTEGER,
+    kp_sum INTEGER,
+    contracts_count INTEGER,
+    contracts_sum INTEGER,
+    payments_sum INTEGER,
+    new_connections INTEGER,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (employee_key, metric_date)
+);
+
 -- Копии диалогов «вопрос сотрудника → ответ AI», отправленные руководителю:
 -- по admin_message_id узнаём, на какой диалог руководитель ответил исправлением.
 CREATE TABLE IF NOT EXISTS ai_dialogs (
@@ -665,3 +691,75 @@ def get_ai_dialog(admin_message_id: int):
         return conn.execute(
             "SELECT * FROM ai_dialogs WHERE admin_message_id = ?", (admin_message_id,)
         ).fetchone()
+
+
+# ---------- планы и статистика (админка) ----------
+
+PLAN_FIELDS = ("calls_daily", "sales_monthly", "connections_monthly")
+METRIC_FIELDS = (
+    "calls", "meetings_held", "meetings_new", "kp_count", "kp_sum",
+    "contracts_count", "contracts_sum", "payments_sum", "new_connections",
+)
+
+
+def get_plans() -> dict:
+    with get_conn() as conn:
+        return {r["employee_key"]: dict(r) for r in conn.execute("SELECT * FROM plans").fetchall()}
+
+
+def get_plan(employee_key: str):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM plans WHERE employee_key = ?", (employee_key,)).fetchone()
+        return dict(row) if row else None
+
+
+def save_plan(employee_key: str, values: dict):
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO plans (employee_key, calls_daily, sales_monthly, connections_monthly, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(employee_key) DO UPDATE SET
+                 calls_daily = excluded.calls_daily,
+                 sales_monthly = excluded.sales_monthly,
+                 connections_monthly = excluded.connections_monthly,
+                 updated_at = excluded.updated_at""",
+            (employee_key, *(values.get(f) for f in PLAN_FIELDS),
+             datetime.now().isoformat(timespec="seconds")),
+        )
+
+
+def save_daily_metrics(employee_key: str, metric_date: str, values: dict):
+    with get_conn() as conn:
+        conn.execute(
+            f"""INSERT OR REPLACE INTO daily_metrics
+                (employee_key, metric_date, {", ".join(METRIC_FIELDS)}, updated_at)
+                VALUES (?, ?, {", ".join("?" * len(METRIC_FIELDS))}, ?)""",
+            (employee_key, metric_date, *(values.get(f) for f in METRIC_FIELDS),
+             datetime.now().isoformat(timespec="seconds")),
+        )
+
+
+def get_metrics_between(start: str, end: str):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM daily_metrics WHERE metric_date BETWEEN ? AND ?", (start, end)
+        ).fetchall()
+
+
+def get_reports_between(start: str, end: str):
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM checkin_sessions
+               WHERE status = 'completed' AND session_date BETWEEN ? AND ?
+               ORDER BY completed_at DESC""",
+            (start, end),
+        ).fetchall()
+
+
+def get_overdue_checkins_between(start: str, end: str):
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM checkin_sessions
+               WHERE nagged = 1 AND session_date BETWEEN ? AND ?""",
+            (start, end),
+        ).fetchall()

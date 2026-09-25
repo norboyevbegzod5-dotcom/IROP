@@ -163,6 +163,25 @@ _CHECKIN_TOOL = {
                         "если что-то сотрудник не сообщил — так и написать."
                     ),
                 },
+                "metrics": {
+                    "type": "object",
+                    "description": (
+                        "Только для итогов дня при finished=true: цифры за день из ответов "
+                        "сотрудника. Суммы — в сумах целым числом. Если сотрудник не назвал "
+                        "цифру — null, не выдумывай."
+                    ),
+                    "properties": {
+                        "calls": {"type": ["integer", "null"], "description": "Звонков сделано"},
+                        "meetings_held": {"type": ["integer", "null"], "description": "Встреч проведено"},
+                        "meetings_new": {"type": ["integer", "null"], "description": "Новых встреч назначено"},
+                        "kp_count": {"type": ["integer", "null"], "description": "КП отправлено"},
+                        "kp_sum": {"type": ["integer", "null"], "description": "Общая сумма КП"},
+                        "contracts_count": {"type": ["integer", "null"], "description": "Договоров подписано"},
+                        "contracts_sum": {"type": ["integer", "null"], "description": "Сумма договоров"},
+                        "payments_sum": {"type": ["integer", "null"], "description": "Фактически поступило денег"},
+                        "new_connections": {"type": ["integer", "null"], "description": "Новых клиентов подключено"},
+                    },
+                },
             },
             "required": ["message", "finished"],
         },
@@ -192,6 +211,12 @@ def _checkin_system_prompt(full_name, title, goal, context, must_finish) -> str:
         f"Предыдущий отчёт сотрудника:\n{previous}\n\n"
         f"Задачи сотрудника на сегодня:\n{task_lines}"
     )
+    if context.get("plan"):
+        prompt += (
+            f"\n\n{context['plan']}\nСравнивай факт с этим планом: называй план и спрашивай "
+            "факт («План был 40 звонков. Сколько фактически?»), по недовыполнению — почему "
+            "и что конкретно будет сделано, с датой и временем."
+        )
     prompt = _with_knowledge(prompt, context.get("knowledge") or "")
     if must_finish:
         prompt += "\n\nВопросов уже достаточно: завершай сейчас (finished=true) с отчётом."

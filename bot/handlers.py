@@ -6,7 +6,7 @@ from telegram.constants import ChatAction
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import ContextTypes
 
-from bot import ai, checkins, db, knowledge, styles, texts
+from bot import admin_context, ai, checkins, db, knowledge, styles, texts
 from bot.config import (
     ADMIN_CHAT_ID,
     AUTO_TASK_DEFAULT_DEADLINE,
@@ -43,12 +43,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"Привет, руководитель. Я {BOT_NAME}. Команды:\n"
             f"/admin — админка: планы и статистика по отчётам\n"
+            f"/copies — присылать ли копии диалогов сотрудников с AI\n"
             f"/status — статус за сегодня\n"
             f"/team — кто из команды подключился\n"
             f"/style — характер AI-РОПа (строгий или мотиватор)\n"
             f"/learn — научить AI: факты, цены, скрипты, ответы на возражения\n"
             f"/knowledge — что AI уже знает; /forget номер — удалить запись\n\n"
-            f"Чтобы AI отвечал как ты — отвечай на копии его диалогов своим вариантом."
+            f"💬 Спрашивай меня о команде текстом или голосом: «сколько встреч сегодня "
+            f"сделали ребята?», «кто не сдал итоги дня?». Поручение сотруднику — тоже просто "
+            f"напиши: «Аслбеку 150 звонков за неделю»."
         )
         return
 
@@ -219,6 +222,48 @@ async def on_style_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=keyboard)
     except BadRequest:
         pass  # ничего не изменилось — Telegram не даёт отредактировать тем же текстом
+
+
+_COPIES_SETTING = "dialog_copies"
+
+
+def _dialog_copies_on() -> bool:
+    return db.get_setting(_COPIES_SETTING, "off") == "on"
+
+
+def _copies_menu():
+    on = _dialog_copies_on()
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(
+            "🔕 Выключить копии" if on else "🔔 Включить копии",
+            callback_data=f"copies:{'off' if on else 'on'}",
+        )]]
+    )
+    return texts.copies_status(on), keyboard
+
+
+async def copies_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update.effective_chat.id):
+        await update.message.reply_text(texts.admin_only())
+        return
+    text, keyboard = _copies_menu()
+    await update.message.reply_text(text, reply_markup=keyboard)
+
+
+async def on_copies_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not _is_admin(query.message.chat_id):
+        await query.answer(texts.admin_only(), show_alert=True)
+        return
+    value = query.data.split(":", 1)[1]
+    if value in ("on", "off"):
+        db.set_setting(_COPIES_SETTING, value)
+    await query.answer("Готово")
+    text, keyboard = _copies_menu()
+    try:
+        await query.edit_message_text(text, reply_markup=keyboard)
+    except BadRequest:
+        pass
 
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -392,13 +437,55 @@ async def admin_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _save_correction(update, dialog, text)
             return
 
-    # 3) Иначе — поручение сотруднику.
+    # 3) Иначе — AI-чат руководителя: ответ на вопрос о команде или поручение.
+    await _admin_ai_message(update, context, text)
 
-    parsed = ai.parse_task(text)
-    if parsed is None:
+
+_ADMIN_CHAT_KEY = "__admin__"  # переписка руководителя с AI в chat_messages
+
+
+async def _admin_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    today_str = date.today().isoformat()
+    history = db.get_messages_for_day(_ADMIN_CHAT_KEY, today_str)
+    snapshot = admin_context.build_snapshot()
+
+    result = await asyncio.to_thread(ai.admin_chat, text, history, snapshot)
+    if result is None:
         await update.message.reply_text(texts.ai_error())
         return
 
+    db.log_message(_ADMIN_CHAT_KEY, today_str, "admin", text)
+    kind, payload = result
+    if kind == "task":
+        db.log_message(_ADMIN_CHAT_KEY, today_str, "bot", f"(поставлена задача: {payload.get('title') or text})")
+        await _assign_task(update, context, payload, text)
+        return
+
+    db.log_message(_ADMIN_CHAT_KEY, today_str, "bot", payload)
+    for start in range(0, len(payload), _TELEGRAM_LIMIT):
+        await update.message.reply_text(payload[start:start + _TELEGRAM_LIMIT])
+
+
+async def admin_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Голосовое руководителя — расшифровываем и обрабатываем как текст в AI-чате."""
+    voice = update.message.voice
+    if voice.duration and voice.duration > MAX_VOICE_SECONDS:
+        await update.message.reply_text(texts.voice_too_long(MAX_VOICE_SECONDS // 60))
+        return
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    tg_file = await voice.get_file()
+    audio = bytes(await tg_file.download_as_bytearray())
+    text = await asyncio.to_thread(ai.transcribe, audio, "voice.ogg")
+    if text is None:
+        await update.message.reply_text(texts.voice_not_recognized())
+        return
+    await update.message.reply_text(texts.voice_transcript(text))
+    await _admin_ai_message(update, context, text)
+
+
+async def _assign_task(update: Update, context: ContextTypes.DEFAULT_TYPE, parsed: dict, text: str):
+    """Ставит поручение руководителя сотруднику (или всем) по разбору AI."""
     employee_key = parsed.get("employee_key")
     title = (parsed.get("title") or text)[:120]
     description = parsed.get("description") or text
@@ -530,16 +617,23 @@ async def ai_chat_reply(bot, employee, text: str) -> str:
         employee["full_name"], history, tasks, employee["rop_style"], knowledge_block,
     )
     ai_answered = reply is not None
+    escalate = False
     if not ai_answered:
         reply = texts.employee_ai_unavailable()
+        escalate = True  # сотруднику сказали «передал руководителю» — значит, передаём
+    elif ai.ESCALATE_MARK in reply:
+        reply = reply.replace(ai.ESCALATE_MARK, "").strip()
+        escalate = True
     db.log_message(employee["key"], today_str, "bot", reply)
 
-    if ADMIN_CHAT_ID is not None:
+    # Обычные диалоги руководитель видит, только если включил копии в /copies;
+    # вопросы, которые AI передал руководителю, приходят всегда.
+    if ADMIN_CHAT_ID is not None and (escalate or _dialog_copies_on()):
         try:
             copy = await bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
                 text=texts.employee_ai_dialog_admin(
-                    employee["full_name"], text, reply, can_correct=ai_answered
+                    employee["full_name"], text, reply, can_correct=ai_answered, escalated=escalate
                 ),
             )
             if ai_answered:
@@ -719,6 +813,7 @@ async def employee_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def employee_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if _is_admin(chat_id):
+        await admin_voice(update, context)
         return
 
     employee = db.get_employee_by_chat(chat_id)

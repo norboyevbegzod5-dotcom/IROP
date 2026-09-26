@@ -59,20 +59,6 @@ _TOOL = {
 }
 
 
-def _system_prompt() -> str:
-    names = "\n".join(f"- {e.full_name} -> employee_key={e.key}" for e in EMPLOYEES)
-    return (
-        "Ты — ассистент РОПа (руководителя отдела продаж). Руководитель пишет тебе короткие "
-        "поручения на русском в свободной форме, ты превращаешь их в структурированную задачу "
-        "для конкретного сотрудника через функцию assign_task.\n\n"
-        f"Сотрудники:\n{names}\n\n"
-        "Если явно сказано 'все'/'всем', employee_key='all'. "
-        "Если имя не распознано или неоднозначно, employee_key='unclear'. "
-        "description должен быть готовой формулировкой задачи, которую сотрудник получит "
-        "в Telegram от лица руководителя — по-деловому и конкретно."
-    )
-
-
 def transcribe(audio: bytes, filename: str):
     """Расшифровка голосового в текст. filename нужен OpenAI, чтобы понять формат
     (voice.ogg из Telegram, voice.webm/voice.mp4 из мини-аппа). None при ошибке."""
@@ -90,6 +76,8 @@ def transcribe(audio: bytes, filename: str):
 
 
 _HISTORY_LIMIT = 20
+# Метка в ответе AI сотруднику: вопрос нужно передать руководителю. Бот её вырезает.
+ESCALATE_MARK = "[[РУКОВОДИТЕЛЮ]]"
 
 
 def _with_knowledge(prompt: str, knowledge_block: str) -> str:
@@ -107,7 +95,8 @@ def _employee_system_prompt(full_name: str, tasks, style: str, knowledge_block: 
         "переговоры и отрабатывать возражения, как написать сообщение или КП клиенту, как "
         "спланировать день, что делать с его задачами. Отвечай на русском, коротко и по делу, "
         "как руководитель — без воды. Если вопрос требует решения руководителя "
-        "(деньги, скидки, увольнение, конфликт), скажи, что передал вопрос руководителю. "
+        "(деньги, скидки, увольнение, конфликт), скажи, что передал вопрос руководителю, и "
+        f"добавь в самый конец ответа отдельной строкой метку {ESCALATE_MARK}. "
         "Не выдумывай факты о клиентах, ценах и условиях компании.\n\n"
         f"{styles.PROMPTS[styles.normalize(style)]}\n\n"
         f"Задачи сотрудника на сегодня:\n{task_lines}",
@@ -405,29 +394,55 @@ def analyze_tasks(message: str, history, tasks, now: datetime) -> dict:
     return {"completed": completed, "new_tasks": new_tasks}
 
 
-def parse_task(admin_text: str):
+_ADMIN_HISTORY_LIMIT = 12
+
+
+def _admin_chat_prompt(snapshot: str) -> str:
+    names = "\n".join(f"- {e.full_name} -> employee_key={e.key}" for e in EMPLOYEES)
+    return (
+        f"Ты — {BOT_NAME}, AI-помощник руководителя отдела продаж. Руководитель пишет тебе "
+        "в чат. Возможны два случая:\n"
+        "1) Вопрос о работе команды («сколько встреч сегодня сделали ребята?», «кто не сдал "
+        "итоги дня?», «как Аслбек по плану?»). Отвечай по ДАННЫМ ниже: коротко, по-русски, "
+        "по каждому сотруднику отдельной строкой, с цифрами, клиентами и временем, если они "
+        "есть. Если нужных данных нет — прямо скажи, чего нет и почему (например, итоги дня "
+        "ещё не сданы, есть только утренний план). Никогда не выдумывай цифры.\n"
+        "2) Поручение сотруднику («Аслбеку 150 звонков за неделю», «всем отправить отчёт») — "
+        "вызови функцию assign_task. Вопрос — это не поручение.\n\n"
+        f"Сотрудники:\n{names}\n\n"
+        "Если явно сказано 'все'/'всем', employee_key='all'. Если имя не распознано, "
+        "employee_key='unclear'. description в assign_task — готовая формулировка задачи от "
+        "лица руководителя.\n\n"
+        f"ДАННЫЕ:\n{snapshot}"
+    )
+
+
+def admin_chat(message: str, history, snapshot: str):
+    """Ответ AI руководителю. Возвращает ("task", args) — если это поручение
+    (args: employee_key, title, description, deadline_days), ("answer", текст) — если вопрос, None — при ошибке.
+    history — предыдущие сообщения этого чата (sender 'admin'/'bot', text)."""
     if not OPENAI_API_KEY:
         return None
 
-    client = _get_client()
+    messages = [{"role": "system", "content": _admin_chat_prompt(snapshot)}]
+    for m in list(history)[-_ADMIN_HISTORY_LIMIT:]:
+        messages.append({"role": "user" if m["sender"] == "admin" else "assistant", "content": m["text"]})
+    messages.append({"role": "user", "content": message})
+
     try:
-        resp = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": _system_prompt()},
-                {"role": "user", "content": admin_text},
-            ],
-            tools=[_TOOL],
-            tool_choice={"type": "function", "function": {"name": "assign_task"}},
+        resp = _get_client().chat.completions.create(
+            model=OPENAI_MODEL, messages=messages, tools=[_TOOL], tool_choice="auto"
         )
     except Exception:
         return None
 
-    message = resp.choices[0].message
-    if not message.tool_calls:
-        return None
+    reply = resp.choices[0].message
+    if reply.tool_calls:
+        try:
+            return "task", json.loads(reply.tool_calls[0].function.arguments)
+        except (ValueError, IndexError):
+            return None
+    text = (reply.content or "").strip()
+    return ("answer", text) if text else None
 
-    try:
-        return json.loads(message.tool_calls[0].function.arguments)
-    except (ValueError, IndexError):
-        return None
+

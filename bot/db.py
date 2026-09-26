@@ -84,6 +84,12 @@ CREATE TABLE IF NOT EXISTS knowledge (
     created_at TEXT NOT NULL
 );
 
+-- Настройки руководителя (например, присылать ли копии диалогов сотрудников с AI).
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 -- Планы, которые руководитель задаёт в админке.
 CREATE TABLE IF NOT EXISTS plans (
     employee_key TEXT PRIMARY KEY,
@@ -763,3 +769,20 @@ def get_overdue_checkins_between(start: str, end: str):
                WHERE nagged = 1 AND session_date BETWEEN ? AND ?""",
             (start, end),
         ).fetchall()
+
+
+# ---------- настройки руководителя ----------
+
+def get_setting(key: str, default: str = None):
+    with get_conn() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+
+
+def set_setting(key: str, value: str):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )

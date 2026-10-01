@@ -6,7 +6,7 @@ from telegram.constants import ChatAction
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import ContextTypes
 
-from bot import admin_context, ai, checkins, db, knowledge, styles, texts
+from bot import admin_context, ai, checkins, db, digest, goals, knowledge, styles, texts
 from bot.config import (
     ADMIN_CHAT_ID,
     AUTO_TASK_DEFAULT_DEADLINE,
@@ -266,6 +266,33 @@ async def on_copies_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         pass
 
 
+def summary_keyboard(day: date):
+    """Кнопки под вечерней сводкой: админка и все отчёты дня целиком."""
+    from bot import admin  # локально: admin тянет aiohttp
+
+    row = []
+    url = admin.panel_url()
+    if url:
+        row.append(InlineKeyboardButton("📊 Админка", web_app=WebAppInfo(url=url)))
+    row.append(InlineKeyboardButton("📄 Отчёты целиком", callback_data=f"reports:{day.isoformat()}"))
+    return InlineKeyboardMarkup([row])
+
+
+async def on_reports_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not _is_admin(query.message.chat_id):
+        await query.answer(texts.admin_only(), show_alert=True)
+        return
+    try:
+        day = date.fromisoformat(query.data.split(":", 1)[1])
+    except ValueError:
+        await query.answer()
+        return
+    await query.answer()
+    for text in digest.full_reports(day):
+        await query.message.reply_text(text)
+
+
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update.effective_chat.id):
         await update.message.reply_text(texts.admin_only())
@@ -501,16 +528,30 @@ async def _assign_task(update: Update, context: ContextTypes.DEFAULT_TYPE, parse
         next(e for e in EMPLOYEES if e.key == employee_key)
     ]
 
-    deadline_at = datetime.now() + timedelta(days=deadline_days)
-    deadline_str = deadline_at.strftime("%d.%m %H:%M")
+    metric, target = parsed.get("metric"), parsed.get("target")
+    if metric not in goals.METRICS or not isinstance(target, int) or target <= 0:
+        metric, target = None, None
+
+    if metric:
+        # Цель считается по вечерним отчётам — срок до конца последнего дня.
+        deadline_at = goals.deadline_for(date.today(), deadline_days)
+        deadline_str = deadline_at.strftime("%d.%m")
+        goal_line = texts.goal_line(goals.METRICS[metric][0], goals.fmt(metric, target))
+    else:
+        deadline_at = datetime.now() + timedelta(days=deadline_days)
+        deadline_str = deadline_at.strftime("%d.%m %H:%M")
+        goal_line = ""
     today_str = date.today().isoformat()
 
     for emp in targets:
-        instance_id = db.create_manual_task(emp.key, title, description, deadline_at, today_str)
+        instance_id = db.create_manual_task(
+            emp.key, title, description, deadline_at, today_str, metric=metric, target=target
+        )
         employee_row = db.get_employee(emp.key)
 
         if employee_row and employee_row["chat_id"]:
             task_text = texts.manual_task_message(emp.full_name, title, description, deadline_str)
+            task_text += goal_line
             buttons = [[InlineKeyboardButton("🖐 Принять", callback_data=f"accept:{instance_id}")]]
             if WEBAPP_URL:
                 from telegram import WebAppInfo
@@ -531,6 +572,7 @@ async def _assign_task(update: Update, context: ContextTypes.DEFAULT_TYPE, parse
             except (Forbidden, BadRequest):
                 pass
             confirm_text = texts.manual_task_confirmation(emp.full_name, title, deadline_str)
+            confirm_text += goal_line
             confirm_keyboard = InlineKeyboardMarkup(
                 [[InlineKeyboardButton("🚫 Отменить", callback_data=f"cancel:{instance_id}")]]
             )
@@ -652,6 +694,11 @@ async def _answer_employee(bot, employee, text: str) -> str:
         return await ai_chat_reply(bot, employee, text)
 
     reply, report = await checkins.handle_answer(session, employee, text)
+    if report is not None and session["kind"] == checkins.EVENING:
+        # Цифры дня сохранены — пересчитываем цели (🏆 уходит отдельным сообщением).
+        lines = [goals.short_line(p) for p in await goals.check_achieved(bot, employee)]
+        if lines:
+            reply = reply + "\n\n" + "\n".join(lines)
     db.log_message(employee["key"], date.today().isoformat(), "bot", reply)
 
     if report is not None and ADMIN_CHAT_ID is not None:
@@ -707,7 +754,8 @@ async def process_tasks(bot, employee, text: str) -> list:
     уведомления для сотрудника; руководителю уходят уведомления с кнопками отмены."""
     today_str = date.today().isoformat()
     now = datetime.now()
-    open_tasks = db.get_open_tasks(employee["key"], today_str)
+    # Цели («150 звонков») закрываются по цифрам отчётов, а не по словам сотрудника.
+    open_tasks = [t for t in db.get_open_tasks(employee["key"], today_str) if not t["metric"]]
 
     # Контекст — несколько сообщений до текущего (само текущее уже записано последним).
     history = db.get_messages_for_day(employee["key"], today_str)[-7:-1]

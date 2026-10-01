@@ -32,6 +32,7 @@ def build_application() -> Application:
     application.add_handler(CallbackQueryHandler(handlers.on_done_callback, pattern=r"^done:"))
     application.add_handler(CallbackQueryHandler(handlers.on_cancel_callback, pattern=r"^cancel:"))
     application.add_handler(CallbackQueryHandler(handlers.on_accept_callback, pattern=r"^accept:"))
+    application.add_handler(CallbackQueryHandler(handlers.on_reports_callback, pattern=r"^reports:"))
     application.add_handler(CallbackQueryHandler(handlers.on_style_callback, pattern=r"^style:"))
     application.add_handler(CallbackQueryHandler(handlers.on_reopen_callback, pattern=r"^reopen:"))
     application.add_handler(CallbackQueryHandler(handlers.on_sendfix_callback, pattern=r"^sendfix:"))

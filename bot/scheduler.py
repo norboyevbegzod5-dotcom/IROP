@@ -4,7 +4,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import Forbidden, BadRequest
 from telegram.ext import ContextTypes
 
-from bot import checkins, db, texts
+from bot import checkins, db, digest, goals, handlers, texts
 from bot.config import ADMIN_CHAT_ID, AUTO_TASK_OVERDUE_GRACE_HOURS, EMPLOYEES, WEBAPP_URL
 
 
@@ -43,6 +43,8 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def check_deadlines(context: ContextTypes.DEFAULT_TYPE):
+    # Сначала итоги целей: добранная к сроку цель не должна уйти в «просрочено».
+    await goals.close_expired(context.bot, datetime.now())
     auto_cutoff = datetime.now() - timedelta(hours=AUTO_TASK_OVERDUE_GRACE_HOURS)
     overdue = db.get_newly_overdue(_now_iso(), auto_cutoff.isoformat(timespec="seconds"))
     for t in overdue:
@@ -74,21 +76,30 @@ async def send_admin_summary(context: ContextTypes.DEFAULT_TYPE):
     if ADMIN_CHAT_ID is None:
         return
 
-    today_str = date.today().isoformat()
-    summary = {row["employee_key"]: row for row in db.get_status_summary(today_str)}
+    today = date.today()
+    summary = {row["employee_key"]: row for row in db.get_status_summary(today.isoformat())}
 
-    lines = [texts.admin_summary_header(today_str)]
+    # Задачи на сегодня — отдельным блоком, только если они были.
+    task_lines = []
     for e in EMPLOYEES:
         row = summary.get(e.key)
-        done = row["done"] or 0 if row else 0
-        overdue = row["overdue"] or 0 if row else 0
-        total = row["total"] or 0 if row else 0
-        lines.append(texts.admin_summary_line(e.full_name, done, overdue, total))
+        if row and row["total"]:
+            task_lines.append(texts.admin_summary_line(
+                e.full_name, row["done"] or 0, row["overdue"] or 0, row["total"]
+            ))
+    tasks_block = "\n".join([texts.admin_tasks_header(), *task_lines]) if task_lines else ""
 
+    text = await digest.build(today, tasks_block)
     try:
-        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text="\n".join(lines))
+        await context.bot.send_message(
+            chat_id=ADMIN_CHAT_ID, text=text, reply_markup=handlers.summary_keyboard(today)
+        )
     except (Forbidden, BadRequest):
         pass
+
+
+async def nudge_goals(context: ContextTypes.DEFAULT_TYPE):
+    await goals.nudge_behind(context.bot, date.today())
 
 
 async def _nudge_webapp(context: ContextTypes.DEFAULT_TYPE, employee, kind: str):
@@ -183,6 +194,7 @@ def register_jobs(job_queue, tzinfo):
     job_queue.run_repeating(check_reminders, interval=60, first=10, name="check_reminders")
     job_queue.run_repeating(check_deadlines, interval=60, first=15, name="check_deadlines")
     job_queue.run_daily(send_admin_summary, time=dt_time(20, 0, tzinfo=tzinfo), name="admin_summary")
+    job_queue.run_daily(nudge_goals, time=dt_time(12, 0, tzinfo=tzinfo), name="nudge_goals")
 
     standup_hh, standup_mm = (int(x) for x in checkins.SCHEDULE[checkins.STANDUP]["time"].split(":"))
     evening_hh, evening_mm = (int(x) for x in checkins.SCHEDULE[checkins.EVENING]["time"].split(":"))

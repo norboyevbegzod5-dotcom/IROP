@@ -94,6 +94,14 @@
   .task.pending { border-left-color: #fb8c00; }
   .task.done { opacity: 0.6; border-left-color: var(--hint); }
   .task-title { font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
+  .goal-progress { margin-top: 8px; font-size: 13px; }
+  .goal-head { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .goal-bar { height: 6px; border-radius: 999px; background: rgba(128,128,128,0.2); margin: 5px 0 4px; overflow: hidden; }
+  .goal-bar i { display: block; height: 100%; border-radius: 999px; background: var(--button); }
+  .goal-progress.achieved .goal-bar i, .goal-progress.on_track .goal-bar i { background: #2e9d62; }
+  .goal-progress.at_risk .goal-bar i { background: #d39a1c; }
+  .goal-progress.behind .goal-bar i { background: #e53935; }
+  .goal-sub { color: var(--hint); }
   .task-desc { margin-top: 4px; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .task-meta {
     margin-top: 8px;
@@ -615,6 +623,42 @@ function stat(value, label, alert) {
   return div;
 }
 
+function goalValue(g, n) {
+  if (!g.money) return String(n);
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(".0", "").replace(".", ",") + " млн";
+  if (n >= 1e3) return Math.round(n / 1e3) + " тыс";
+  return n + " сум";
+}
+
+// Прогресс цели («150 звонков за неделю») по цифрам вечерних отчётов.
+function goalProgress(g) {
+  const box = document.createElement("div");
+  box.className = "goal-progress " + g.state;
+  const head = document.createElement("div");
+  head.className = "goal-head";
+  const label = document.createElement("span");
+  label.textContent = `${g.metric_icon} ${g.metric_label}`;
+  const value = document.createElement("span");
+  value.textContent = `${goalValue(g, g.fact)} / ${goalValue(g, g.target)}`;
+  head.append(label, value);
+  const bar = document.createElement("div");
+  bar.className = "goal-bar";
+  const fill = document.createElement("i");
+  fill.style.width = Math.min(100, (g.fact / g.target) * 100) + "%";
+  bar.appendChild(fill);
+  const sub = document.createElement("div");
+  sub.className = "goal-sub";
+  const parts = [];
+  if (!g.goal_status) {
+    parts.push(g.state_label.replace("успевает", "успеваешь"));
+    if (g.per_day) parts.push(`нужно ${goalValue(g, g.per_day)} в день`);
+    if (g.forecast !== null && g.state !== "achieved") parts.push(`прогноз ${goalValue(g, g.forecast)}`);
+  }
+  sub.textContent = parts.join(" · ") || "считаю по вечерним отчётам";
+  box.append(head, bar, sub);
+  return box;
+}
+
 function taskCard(t, loadedAt) {
   const card = document.createElement("div");
   card.className = "task " + (t.active ? t.status : "done");
@@ -632,10 +676,14 @@ function taskCard(t, loadedAt) {
     card.appendChild(desc);
   }
 
+  if (t.goal) card.appendChild(goalProgress(t.goal));
+
   const meta = document.createElement("div");
   meta.className = "task-meta";
   const status = document.createElement("span");
-  if (t.active) status.textContent = STATUS_LABELS[t.status];
+  if (t.goal && t.goal.goal_status === "achieved") status.textContent = "🏆 Цель выполнена";
+  else if (t.goal && t.goal.goal_status === "missed") status.textContent = "⌛️ Цель не выполнена";
+  else if (t.active) status.textContent = STATUS_LABELS[t.status];
   else if (t.status === "done") status.textContent = t.closed_by_ai ? "✅ Выполнена · закрыл AI" : "✅ Выполнена";
   else status.textContent = `Срок был ${t.deadline}`;
   meta.appendChild(status);

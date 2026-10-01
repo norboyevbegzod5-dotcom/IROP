@@ -4,7 +4,7 @@
 
 from datetime import date, datetime, timedelta
 
-from bot import checkins, db, stats
+from bot import checkins, db, goals, stats
 from bot.config import EMPLOYEES
 
 METRICS_DAYS = 31        # цифры по дням — за месяц
@@ -112,6 +112,20 @@ def build_snapshot() -> str:
                 f"- {e.full_name}: «{t['title']}» ({source}), срок {t['deadline_at'][:16].replace('T', ' ')}, "
                 f"статус {t['status']}"
             )
+    if len(lines) == 1:
+        lines.append("- нет")
+    parts.append("\n".join(lines))
+
+    # Цели с прогрессом по цифрам отчётов
+    lines = ["ЦЕЛИ (задачи с числом, факт — сумма вечерних отчётов за срок задачи):"]
+    for p in goals.open_progress(today=today):
+        lines.append(
+            f"- {names.get(p['employee_key'], p['employee_key'])}: «{p['title']}» — "
+            f"{p['metric_label']} {goals.fmt(p['metric'], p['fact'])} из {goals.fmt(p['metric'], p['target'])}, "
+            f"до {p['end']}, {p['state_label']}"
+            + (f", нужно {goals.fmt(p['metric'], p['per_day'])} в день" if p["per_day"] else "")
+            + (f", прогноз {goals.fmt(p['metric'], p['forecast'])}" if p["forecast"] is not None else "")
+        )
     if len(lines) == 1:
         lines.append("- нет")
     parts.append("\n".join(lines))

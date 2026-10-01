@@ -275,3 +275,11 @@ def checkin_overdue_employee(title: str) -> str:
 
 def checkin_overdue_admin(full_name: str, title: str) -> str:
     return f"⚠️ {full_name} не завершил «{title}» вовремя."
+
+
+def goal_line(icon: str, target_str: str) -> str:
+    return f"\n🎯 Цель: {icon} {target_str} — прогресс считаю по вечерним отчётам."
+
+
+def admin_tasks_header() -> str:
+    return "📋 Задачи на сегодня:"

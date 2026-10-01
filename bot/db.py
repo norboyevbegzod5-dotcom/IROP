@@ -164,6 +164,7 @@ def init_db():
         conn.executescript(_SCHEMA)
         _migrate_task_instances(conn)
         _migrate_task_autoclose(conn)
+        _migrate_task_goals(conn)
         _migrate_checkin_sessions(conn)
         _migrate_employees(conn)
         _seed_employees(conn)
@@ -203,6 +204,17 @@ def _migrate_task_autoclose(conn):
     for col in ("closed_by", "close_note", "prev_status"):
         if col not in cols:
             conn.execute(f"ALTER TABLE task_instances ADD COLUMN {col} TEXT")
+
+
+def _migrate_task_goals(conn):
+    # Цели по цифрам вечерних отчётов («150 звонков за неделю»): metric — поле
+    # daily_metrics, target — сколько набрать, goal_status — итог (achieved/missed),
+    # nudged_on — дата последнего напоминания о темпе.
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(task_instances)").fetchall()}
+    for name, sql_type in (("metric", "TEXT"), ("target", "INTEGER"),
+                           ("goal_status", "TEXT"), ("nudged_on", "TEXT")):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE task_instances ADD COLUMN {name} {sql_type}")
 
 
 def _migrate_employees(conn):
@@ -343,7 +355,7 @@ def get_newly_overdue(now_iso: str, auto_cutoff_iso: str):
     with get_conn() as conn:
         return conn.execute(
             """SELECT * FROM task_instances
-               WHERE status = 'pending'
+               WHERE status = 'pending' AND goal_status IS NULL
                  AND ((source != 'auto' AND deadline_at <= ?)
                       OR (source = 'auto' AND deadline_at <= ?))""",
             (now_iso, auto_cutoff_iso),
@@ -423,14 +435,15 @@ def reopen_task(instance_id: int) -> bool:
         return True
 
 
-def create_manual_task(employee_key: str, title: str, description: str, deadline_at, task_date: str) -> int:
+def create_manual_task(employee_key: str, title: str, description: str, deadline_at, task_date: str,
+                       metric: str = None, target: int = None) -> int:
     now_iso = datetime.now().isoformat(timespec="seconds")
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO task_instances
                (template_id, employee_key, task_date, title, description,
-                remind_at, deadline_at, status, reminded, source)
-               VALUES (NULL, ?, ?, ?, ?, ?, ?, 'pending', 1, 'manual')""",
+                remind_at, deadline_at, status, reminded, source, metric, target)
+               VALUES (NULL, ?, ?, ?, ?, ?, ?, 'pending', 1, 'manual', ?, ?)""",
             (
                 employee_key,
                 task_date,
@@ -438,6 +451,8 @@ def create_manual_task(employee_key: str, title: str, description: str, deadline
                 description,
                 now_iso,
                 deadline_at.isoformat(timespec="seconds"),
+                metric,
+                target,
             ),
         )
         return cur.lastrowid
@@ -786,3 +801,73 @@ def set_setting(key: str, value: str):
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, value),
         )
+
+
+# ---------- цели по цифрам отчётов ----------
+
+def get_open_goals(employee_key: str = None):
+    """Идущие цели: не отменены, не просрочены без принятия, итог ещё не подведён."""
+    sql = """SELECT * FROM task_instances
+             WHERE metric IS NOT NULL AND goal_status IS NULL
+               AND status IN ('pending', 'accepted')"""
+    params = ()
+    if employee_key:
+        sql += " AND employee_key = ?"
+        params = (employee_key,)
+    with get_conn() as conn:
+        return conn.execute(sql + " ORDER BY deadline_at", params).fetchall()
+
+
+def get_finished_goals(since_iso: str):
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM task_instances
+               WHERE metric IS NOT NULL AND goal_status IS NOT NULL AND deadline_at >= ?
+               ORDER BY deadline_at DESC""",
+            (since_iso,),
+        ).fetchall()
+
+
+def set_goal_status(instance_id: int, goal_status: str) -> bool:
+    """Ставит итог один раз; False — если он уже стоял (защита от двойных уведомлений)."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE task_instances SET goal_status = ? WHERE id = ? AND goal_status IS NULL",
+            (goal_status, instance_id),
+        )
+        return cur.rowcount == 1
+
+
+def mark_goal_nudged(instance_id: int, day: str):
+    with get_conn() as conn:
+        conn.execute("UPDATE task_instances SET nudged_on = ? WHERE id = ?", (day, instance_id))
+
+
+def get_metric_rows(employee_key: str, start: str, end: str):
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM daily_metrics
+               WHERE employee_key = ? AND metric_date BETWEEN ? AND ?
+               ORDER BY metric_date""",
+            (employee_key, start, end),
+        ).fetchall()
+
+
+def get_evening_dates(employee_key: str, since: str) -> set:
+    """Дни, за которые сотрудник сдал итоги дня."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT session_date FROM checkin_sessions
+               WHERE employee_key = ? AND kind = 'evening' AND status = 'completed'
+                 AND session_date >= ?""",
+            (employee_key, since),
+        ).fetchall()
+        return {r["session_date"] for r in rows}
+
+
+def get_session_on(employee_key: str, session_date: str, kind: str):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM checkin_sessions WHERE employee_key = ? AND session_date = ? AND kind = ?",
+            (employee_key, session_date, kind),
+        ).fetchone()

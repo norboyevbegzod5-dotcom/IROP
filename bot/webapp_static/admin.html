@@ -99,6 +99,21 @@
   summary b { font-weight: 600; }
   .report-text { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 8px; font-size: 14px; }
   .empty { color: var(--hint); text-align: center; padding: 18px; }
+  /* Сегодня */
+  .today { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+  .today-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .pills { display: flex; gap: 6px; flex-wrap: wrap; }
+  .pill { font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 999px; background: var(--track); color: var(--hint); white-space: nowrap; }
+  .pill.ok { background: color-mix(in srgb, var(--good) 15%, transparent); color: var(--good); }
+  .pill.bad { background: color-mix(in srgb, var(--bad) 13%, transparent); color: var(--bad); }
+  .pill.mid { background: color-mix(in srgb, var(--mid) 16%, transparent); color: var(--mid); }
+  .pill.fire { background: color-mix(in srgb, var(--mid) 16%, transparent); color: var(--mid); }
+  /* Цели */
+  .goal { padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .goal:first-child { padding-top: 0; }
+  .goal:last-child { border-bottom: 0; padding-bottom: 0; }
+  .goal-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+  .goal-sub { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--hint); margin-top: 4px; }
   #error { display: none; background: #fde8e8; color: #9b1c1c; padding: 10px 12px; border-radius: 10px; margin-bottom: 12px; }
 </style>
 </head>
@@ -114,8 +129,18 @@
 
   <div id="error"></div>
 
+  <div id="todayBlock" hidden>
+    <h2>Сегодня</h2>
+    <div class="card today" id="today"></div>
+  </div>
+
   <h2>Команда</h2>
   <div class="grid kpis" id="kpis"></div>
+
+  <div id="goalsBlock" hidden>
+    <h2>Цели</h2>
+    <div class="card" id="goals"></div>
+  </div>
 
   <h2>Планы сотрудников</h2>
   <div class="card">
@@ -284,6 +309,13 @@ function renderPeople() {
     head.appendChild(el("div", emp.connected ? "tag" : "tag off",
       emp.connected ? emp.style : "не подключён к боту"));
     c.appendChild(head);
+    const badge = streakBadge(emp);
+    if (badge) {
+      const line = el("div", "pills");
+      line.style.marginTop = "6px";
+      line.appendChild(badge);
+      c.appendChild(line);
+    }
 
     const f = emp.fact, p = emp.plan_period;
     c.appendChild(progressRow("Звонки", f.calls, p.calls, false));
@@ -305,6 +337,80 @@ function renderPeople() {
       `Отчёты: итоги дня ${r.evening} из ${wd} · стендапы ${r.standup} из ${wd}` +
       (r.late ? ` · с опозданием: ${r.late}` : "")));
     wrap.appendChild(c);
+  });
+}
+
+// Серия сданных итогов дня или пропуск — видно, кто перестал отчитываться.
+function streakBadge(emp) {
+  if (!emp.connected) return null;
+  if (emp.missed_days > 0) return el("span", "pill bad", `пропуск итогов: ${emp.missed_days} раб. дн.`);
+  if (emp.streak >= 2) return el("span", "pill fire", `🔥 ${emp.streak} дн. подряд с отчётом`);
+  if (emp.missed_days === null) return el("span", "pill", "итогов дня ещё не сдавал");
+  return null;
+}
+
+function checkinPill(label, done, deadlinePassed) {
+  if (done) return el("span", "pill ok", `✓ ${label}`);
+  return deadlinePassed ? el("span", "pill bad", `нет: ${label}`) : el("span", "pill", `⏳ ${label}`);
+}
+
+function renderToday() {
+  $("todayBlock").hidden = !data.is_work_day;
+  if (!data.is_work_day) return;
+  const wrap = $("today");
+  wrap.innerHTML = "";
+  data.employees.forEach((emp) => {
+    const row = el("div", "today-row");
+    row.appendChild(el("b", "", emp.name));
+    const pills = el("div", "pills");
+    if (!emp.connected) {
+      pills.appendChild(el("span", "pill", "не подключён"));
+    } else {
+      pills.append(
+        checkinPill(`стендап ${data.schedule.standup}`, emp.today.standup, data.standup_deadline_passed),
+        checkinPill(`итоги ${data.schedule.evening}`, emp.today.evening, data.evening_deadline_passed),
+      );
+      if (emp.today.active) pills.appendChild(el("span", "pill mid", `идёт: ${emp.today.active}`));
+    }
+    row.appendChild(pills);
+    wrap.appendChild(row);
+  });
+}
+
+const GOAL_PILLS = {
+  achieved: ["выполнено", "ok"], on_track: ["успевает", "ok"], at_risk: ["на грани", "mid"],
+  behind: ["не успевает", "bad"], new: ["только начали", ""],
+};
+
+function renderGoals() {
+  $("goalsBlock").hidden = !data.goals.length;
+  const wrap = $("goals");
+  wrap.innerHTML = "";
+  data.goals.forEach((g) => {
+    let [label, cls] = GOAL_PILLS[g.state];
+    if (g.goal_status === "missed") [label, cls] = ["не выполнено", "bad"];
+    else if (g.goal_status === "achieved") [label, cls] = ["выполнено", "ok"];
+    const val = (n) => (g.money ? money(n) : fmt(n));
+    const box = el("div", "goal");
+    const top = el("div", "goal-top");
+    const name = el("div");
+    name.appendChild(el("b", "", g.employee_name));
+    name.appendChild(document.createTextNode(` · ${g.title}`));
+    top.append(name, el("span", `pill ${cls}`, label));
+    const b = el("div", "bar " + (cls === "ok" ? "good" : cls));
+    const fill = el("i");
+    fill.style.width = Math.min(100, (g.fact / g.target) * 100) + "%";
+    b.appendChild(fill);
+    const notes = [`${g.metric_icon} ${g.metric_label}`, `до ${g.end.split("-").reverse().slice(0, 2).join(".")}`];
+    if (!g.goal_status) {
+      if (g.per_day) notes.push(`нужно ${val(g.per_day)} в день`);
+      if (g.forecast !== null && g.state !== "achieved") notes.push(`прогноз ${val(g.forecast)}`);
+      if (!g.accepted) notes.push("не принята");
+    }
+    const sub = el("div", "goal-sub");
+    sub.append(el("b", "", `${val(g.fact)} из ${val(g.target)}`), el("span", "", notes.join(" · ")));
+    box.append(top, b, sub);
+    wrap.appendChild(box);
   });
 }
 
@@ -343,7 +449,9 @@ async function load() {
     return;
   }
   renderPeriods();
+  renderToday();
   renderKpis();
+  renderGoals();
   renderPlans();
   renderPeople();
   renderReports();

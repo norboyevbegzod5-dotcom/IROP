@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime
 
 from openai import OpenAI
@@ -11,6 +12,8 @@ from bot.config import (
     OPENAI_MODEL,
     OPENAI_TRANSCRIBE_MODEL,
 )
+
+logger = logging.getLogger(__name__)
 
 _client = None
 
@@ -52,8 +55,32 @@ _TOOL = {
                         "'месячная' = 30, 'сегодня' = 0, 'завтра' = 1, если не указано = 1"
                     ),
                 },
+                "metric": {
+                    "type": "string",
+                    "enum": [
+                        "calls", "meetings_held", "meetings_new", "kp_count", "contracts_count",
+                        "contracts_sum", "payments_sum", "new_connections", "none",
+                    ],
+                    "description": (
+                        "Если задача — набрать количество по цифрам вечернего отчёта, то какое: "
+                        "calls — звонки; meetings_held — проведённые встречи; meetings_new — "
+                        "назначенные встречи (просто «встречи» = meetings_new); kp_count — "
+                        "отправленные КП; contracts_count — договоры (штук); contracts_sum — сумма "
+                        "договоров; payments_sum — поступившие деньги / продажи / «собрать N млн»; "
+                        "new_connections — новые клиенты/подключения. Иначе (презентация, съездить "
+                        "к клиенту, позвонить конкретному клиенту) — none."
+                    ),
+                },
+                "target": {
+                    "type": "integer",
+                    "description": (
+                        "Сколько нужно набрать по metric за весь срок. Деньги — в сумах целым "
+                        "числом ('20 млн' = 20000000). Поручение 'всем' — цель на каждого. "
+                        "Если metric=none — 0."
+                    ),
+                },
             },
-            "required": ["employee_key", "title", "description", "deadline_days"],
+            "required": ["employee_key", "title", "description", "deadline_days", "metric", "target"],
         },
     },
 }
@@ -446,3 +473,43 @@ def admin_chat(message: str, history, snapshot: str):
     return ("answer", text) if text else None
 
 
+
+
+# ---------- вечерняя сводка руководителю ----------
+
+_DIGEST_PROMPT = (
+    "Ты — опытный руководитель отдела продаж и помогаешь владельцу бизнеса разобрать день "
+    "команды. На входе JSON с фактами за сегодня по каждому сотруднику: отчёт стендапа и "
+    "отчёт итогов дня (тексты), цифры дня, средние цифры его обычного дня, план руководителя, "
+    "серия сданных отчётов, пропуски и цели.\n\n"
+    "Напиши выводы обычным текстом без Markdown (без *, #, _), строго в таком виде:\n"
+    "🏆 Лучший день: одна строка — кто и чем отличился.\n\n"
+    "⚠️ Обратить внимание:\n• до 4 пунктов\n\n"
+    "💡 Что сделать завтра:\n• до 3 конкретных действий для руководителя\n\n"
+    "Что искать: расхождение утреннего плана (с кем собирался говорить) и вечернего факта; "
+    "заметную просадку против своего обычного дня; много звонков без встреч; отставание от "
+    "плана и целей; отсутствие отчёта. Опирайся только на данные, имена и цифры бери из них, "
+    "не выдумывай. Общие итоги не повторяй — они уже есть в сообщении выше. Пиши коротко, "
+    "по-деловому, по-русски. Если данных почти нет — скажи это одной строкой."
+)
+
+
+def daily_insights(facts: dict):
+    """Выводы для вечерней сводки. None — если AI недоступен или ответил пусто."""
+    if not OPENAI_API_KEY:
+        return None
+    try:
+        resp = _get_client().chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": _DIGEST_PROMPT},
+                {"role": "user", "content": json.dumps(facts, ensure_ascii=False)},
+            ],
+            max_tokens=700,
+            temperature=0.3,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+    except Exception:
+        logger.exception("Не удалось получить выводы для сводки")
+        return None
+    return text or None

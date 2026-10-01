@@ -6,7 +6,7 @@ from aiohttp import web
 
 from telegram.error import BadRequest, Forbidden
 
-from bot import admin, ai, checkins, db, handlers, texts
+from bot import admin, ai, checkins, db, goals, handlers, texts
 from bot.config import ADMIN_CHAT_ID, AUTO_TASK_OVERDUE_GRACE_HOURS
 from bot.telegram_auth import get_user, validate_init_data
 
@@ -118,6 +118,11 @@ def _task_json(t, now: datetime) -> dict:
     if status == "pending" and overdue_at <= now:
         status = "overdue"  # джоба отметит чуть позже, но показываем уже сейчас
     active = status in ("pending", "overdue") or (status == "accepted" and deadline > now)
+    goal = None
+    if t["metric"]:
+        goal = goals.progress(t, now.date())
+        if t["goal_status"]:
+            active = False  # итог по цели подведён — задача в «Завершённых»
     if auto and status == "pending":
         status = "scheduled"  # задачу из чата принимать не нужно — она просто ждёт срока
     return {
@@ -133,6 +138,7 @@ def _task_json(t, now: datetime) -> dict:
         # Секунды до дедлайна считаем на сервере, чтобы не зависеть от часового пояса
         # телефона; дальше мини-апп сам тикает от этого значения.
         "seconds_left": int((deadline - now).total_seconds()),
+        "goal": goal,
     }
 
 

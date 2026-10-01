@@ -3,11 +3,11 @@
 
 import hmac
 import os
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from aiohttp import web
 
-from bot import checkins, db, stats, styles
+from bot import checkins, db, digest, goals, stats, styles
 from bot.config import ADMIN_PANEL_TOKEN, EMPLOYEES, WEBAPP_URL
 
 _STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webapp_static", "admin.html")
@@ -49,11 +49,19 @@ async def handle_data(request: web.Request):
     reports = db.get_reports_between(start.isoformat(), end.isoformat())
     overdue = db.get_overdue_checkins_between(start.isoformat(), end.isoformat())
 
+    today = date.today()
+    today_str = today.isoformat()
+    since = (today - timedelta(days=120)).isoformat()
+    todays = db.get_reports_between(today_str, today_str)
+
     employees = []
     for e in EMPLOYEES:
         row = employees_rows.get(e.key)
         plan = plans.get(e.key) or {}
         done = [r for r in reports if r["employee_key"] == e.key]
+        done_today = {r["kind"] for r in todays if r["employee_key"] == e.key}
+        active = db.get_active_session(e.key)
+        evening_dates = db.get_evening_dates(e.key, since)
         employees.append(
             {
                 "key": e.key,
@@ -68,8 +76,23 @@ async def handle_data(request: web.Request):
                     "evening": sum(1 for r in done if r["kind"] == checkins.EVENING),
                     "late": sum(1 for r in overdue if r["employee_key"] == e.key),
                 },
+                "today": {
+                    "standup": checkins.STANDUP in done_today,
+                    "evening": checkins.EVENING in done_today,
+                    "active": checkins.TITLES[active["kind"]] if active is not None else None,
+                },
+                "streak": digest.streak(evening_dates, today),
+                "missed_days": digest.missed_days(evening_dates, today),
             }
         )
+
+    goal_rows = list(db.get_open_goals()) + list(db.get_finished_goals(start.isoformat()))
+    goal_list = []
+    for task in goal_rows:
+        p = goals.progress(task, today)
+        p["employee_name"] = next((e.full_name for e in EMPLOYEES if e.key == task["employee_key"]),
+                                  task["employee_key"])
+        goal_list.append(p)
 
     names = {e.key: e.full_name for e in EMPLOYEES}
     return web.json_response(
@@ -78,8 +101,13 @@ async def handle_data(request: web.Request):
                        "start": start.isoformat(), "end": end.isoformat(),
                        "workdays": stats.plan_for_period({}, period)["workdays"]},
             "periods": stats.PERIODS,
-            "today": date.today().isoformat(),
+            "today": today_str,
+            "is_work_day": today.weekday() in checkins.SCHEDULE[checkins.EVENING]["days"],
+            "schedule": {k: checkins.SCHEDULE[k]["time"] for k in (checkins.STANDUP, checkins.EVENING)},
+            "evening_deadline_passed": _deadline_passed(checkins.EVENING),
+            "standup_deadline_passed": _deadline_passed(checkins.STANDUP),
             "employees": employees,
+            "goals": goal_list,
             "reports": [
                 {
                     "name": names.get(r["employee_key"], r["employee_key"]),
@@ -92,6 +120,14 @@ async def handle_data(request: web.Request):
             ],
         }
     )
+
+
+def _deadline_passed(kind: str) -> bool:
+    cfg = checkins.SCHEDULE[kind]
+    hh, mm = (int(x) for x in cfg["time"].split(":"))
+    now = datetime.now()
+    deadline = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    return now >= deadline + timedelta(minutes=cfg["deadline_minutes"])
 
 
 def _plan_value(raw):

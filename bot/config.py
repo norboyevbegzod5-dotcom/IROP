@@ -54,6 +54,16 @@ WEBAPP_URL = (os.getenv("WEBAPP_URL") or os.getenv("RENDER_EXTERNAL_URL", "")).r
 # если он задан, иначе используем WEBAPP_PORT/8080 для локального запуска.
 WEBAPP_PORT = int(os.getenv("PORT") or os.getenv("WEBAPP_PORT", "8080"))
 
+# Как бот получает сообщения: webhook — Telegram сам присылает каждое обновление на
+# WEBAPP_URL (одно обновление попадает ровно в один экземпляр, поэтому нет двойных
+# ответов, когда при деплое на Render минуту работают старая и новая версии);
+# polling — бот сам опрашивает Telegram (локальная разработка). По умолчанию на Render
+# (он выставляет RENDER=true) — webhook, иначе polling.
+TELEGRAM_MODE = os.getenv("TELEGRAM_MODE") or ("webhook" if os.getenv("RENDER") else "polling")
+# Секрет в адресе вебхука и в заголовке, которым Telegram подписывает запросы, — чтобы
+# чужие запросы на этот адрес не выдавались за сообщения сотрудников.
+WEBHOOK_SECRET = hashlib.sha256(f"{BOT_TOKEN}:telegram-webhook".encode()).hexdigest()[:32]
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # DATA_DIR указывает на постоянный диск (Render Persistent Disk и т.п.),
 # чтобы SQLite не терялась при передеплое. Локально — обычная папка data/.

@@ -158,7 +158,107 @@ async def handle_save_plans(request: web.Request):
     return web.json_response({"ok": True})
 
 
+# ---------- настройки, база знаний, AI-чат (всё, что раньше было командами бота) ----------
+
+def _settings_json() -> dict:
+    from bot import handlers  # локально: handlers тяжёлый, а админке он нужен только тут
+
+    rows = {r["key"]: r for r in db.all_employees()}
+    return {
+        "styles": styles.LABELS,
+        "employees": [
+            {"key": e.key, "name": e.full_name,
+             "style": styles.normalize(rows[e.key]["rop_style"] if e.key in rows else None),
+             "connected": bool(e.key in rows and rows[e.key]["chat_id"])}
+            for e in EMPLOYEES
+        ],
+        "copies": handlers.dialog_copies_on(),
+        "knowledge": [
+            {"id": r["id"], "kind": r["kind"], "question": r["question"] or "", "text": r["text"]}
+            for r in db.all_knowledge()
+        ],
+        "chat": handlers.admin_history(date.today().isoformat()),
+    }
+
+
+async def handle_settings(request: web.Request):
+    _check_token(request)
+    return web.json_response(_settings_json())
+
+
+async def handle_style(request: web.Request):
+    _check_token(request)
+    payload = await request.json()
+    key, style = payload.get("key"), payload.get("style")
+    if style not in styles.LABELS or (key != "all" and key not in {e.key for e in EMPLOYEES}):
+        raise web.HTTPBadRequest(text="bad style")
+    for e in EMPLOYEES:
+        if key in ("all", e.key):
+            db.set_rop_style(e.key, style)
+    return web.json_response(_settings_json())
+
+
+async def handle_copies(request: web.Request):
+    _check_token(request)
+    from bot import handlers
+
+    payload = await request.json()
+    handlers.set_dialog_copies(bool(payload.get("on")))
+    return web.json_response(_settings_json())
+
+
+async def handle_knowledge_add(request: web.Request):
+    _check_token(request)
+    from bot import knowledge
+
+    text = str((await request.json()).get("text") or "").strip()
+    if not text:
+        raise web.HTTPBadRequest(text="empty")
+    db.add_knowledge(knowledge.FACT, text[:4000])
+    return web.json_response(_settings_json())
+
+
+async def handle_knowledge_delete(request: web.Request):
+    _check_token(request)
+    try:
+        knowledge_id = int((await request.json()).get("id"))
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="bad id")
+    db.delete_knowledge(knowledge_id)
+    return web.json_response(_settings_json())
+
+
+async def handle_chat(request: web.Request):
+    _check_token(request)
+    from bot import handlers
+
+    text = str((await request.json()).get("text") or "").strip()
+    if not text:
+        raise web.HTTPBadRequest(text="empty")
+    replies = await handlers.admin_request(request.app["bot"], text[:4000])
+    return web.json_response({"replies": replies})
+
+
+async def handle_task_cancel(request: web.Request):
+    _check_token(request)
+    from bot import handlers
+
+    try:
+        task_id = int((await request.json()).get("id"))
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="bad id")
+    ok = await handlers.cancel_assigned_task(request.app["bot"], task_id)
+    return web.json_response({"ok": ok})
+
+
 def register(app: web.Application):
     app.router.add_get("/admin/{token}", handle_page)
     app.router.add_get("/admin/{token}/api/data", handle_data)
     app.router.add_post("/admin/{token}/api/plans", handle_save_plans)
+    app.router.add_get("/admin/{token}/api/settings", handle_settings)
+    app.router.add_post("/admin/{token}/api/style", handle_style)
+    app.router.add_post("/admin/{token}/api/copies", handle_copies)
+    app.router.add_post("/admin/{token}/api/knowledge", handle_knowledge_add)
+    app.router.add_post("/admin/{token}/api/knowledge/delete", handle_knowledge_delete)
+    app.router.add_post("/admin/{token}/api/chat", handle_chat)
+    app.router.add_post("/admin/{token}/api/task/cancel", handle_task_cancel)

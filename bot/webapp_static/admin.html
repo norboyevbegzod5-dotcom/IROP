@@ -136,11 +136,87 @@
   .stages span { display: block; font-size: 12px; color: var(--hint); }
   .stages b { font-size: 18px; font-variant-numeric: tabular-nums; }
   .deal-row { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 9px 0; border-top: 1px solid var(--line); font-size: 14px; }
+  /* Разделы */
+  .pages {
+    position: sticky; top: 0; z-index: 5; display: flex; background: var(--card);
+    border-bottom: 1px solid var(--line);
+  }
+  .pages button {
+    flex: 1; border: 0; background: none; color: var(--hint); font: inherit; font-weight: 600;
+    padding: 12px 6px; border-bottom: 2px solid transparent; cursor: pointer;
+  }
+  .pages button.active { color: var(--text); border-bottom-color: var(--accent); }
+  /* AI-чат */
+  #chatLog { display: flex; flex-direction: column; gap: 8px; padding-bottom: 76px; }
+  .msg { max-width: 86%; padding: 9px 12px; border-radius: 14px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 15px; }
+  .msg.admin { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+  .msg.bot { align-self: flex-start; background: var(--card); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+  .msg .btn { display: block; margin-top: 8px; padding: 7px 12px; background: var(--track); color: var(--text); font-size: 13px; }
+  .chat-input {
+    position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 8px; padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    background: var(--card); border-top: 1px solid var(--line);
+  }
+  .chat-input input {
+    flex: 1; min-width: 0; padding: 10px 14px; border-radius: 20px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--text); font: inherit; font-size: 16px;
+  }
+  /* Настройки */
+  .style-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 0; }
+  .style-row + .style-row { border-top: 1px solid var(--line); }
+  .switch-row { display: flex; justify-content: space-between; align-items: center; gap: 14px; cursor: pointer; }
+  .switch-row input { width: 22px; height: 22px; flex-shrink: 0; accent-color: var(--accent); }
+  #kbText {
+    width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg);
+    color: var(--text); font: inherit; font-size: 16px; resize: vertical;
+  }
+  .kb-item { display: flex; justify-content: space-between; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); font-size: 14px; }
+  .kb-item .text { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
+  .kb-item button { border: 0; background: none; color: var(--bad); font: inherit; font-size: 13px; cursor: pointer; flex-shrink: 0; }
   #error { display: none; background: #fde8e8; color: #9b1c1c; padding: 10px 12px; border-radius: 10px; margin-bottom: 12px; }
 </style>
 </head>
 <body>
+<nav class="pages" id="pages">
+  <button data-page="stats" class="active">📊 Статистика</button>
+  <button data-page="chat">💬 AI-чат</button>
+  <button data-page="settings">⚙️ Настройки</button>
+</nav>
 <div class="wrap">
+  <div id="error"></div>
+
+  <section id="page-chat" class="page" hidden>
+    <div class="hint" style="margin-bottom:10px">Вопросы о команде («кто не сдал итоги дня?») и поручения («Аслбеку 150 звонков за неделю»). Переписка общая с чатом бота.</div>
+    <div id="chatLog"></div>
+    <form id="chatForm" class="chat-input">
+      <input id="chatText" type="text" placeholder="Спроси о команде или поставь задачу…" autocomplete="off" />
+      <button class="btn" id="chatSend" type="submit">➤</button>
+    </form>
+  </section>
+
+  <section id="page-settings" class="page" hidden>
+    <h2 style="margin-top:4px">Характер AI-РОПа</h2>
+    <div class="card" id="styles"></div>
+
+    <h2>Копии диалогов</h2>
+    <div class="card">
+      <label class="switch-row">
+        <span>
+          <b>Присылать мне копии диалогов сотрудников с AI</b>
+          <span class="hint" style="display:block">Ответь на копию своим вариантом — AI сохранит его как образец. Вопросы, которые AI передал тебе, приходят всегда.</span>
+        </span>
+        <input type="checkbox" id="copiesToggle" />
+      </label>
+    </div>
+
+    <h2>База знаний AI</h2>
+    <div class="card">
+      <textarea id="kbText" rows="3" placeholder="Факт, цена, скрипт или ответ на возражение — AI будет на это опираться"></textarea>
+      <div class="save-row"><button class="btn" id="kbAdd">Добавить</button><span class="hint" id="kbStatus"></span></div>
+      <div id="kbList"></div>
+    </div>
+  </section>
+
+  <section id="page-stats" class="page">
   <header>
     <div>
       <h1>📊 Админка РОП</h1>
@@ -148,8 +224,6 @@
     </div>
     <div class="seg" id="periods"></div>
   </header>
-
-  <div id="error"></div>
 
   <div id="todayBlock" hidden>
     <h2>Сегодня</h2>
@@ -212,6 +286,7 @@
 
   <h2>Отчёты сотрудников</h2>
   <div class="card" id="reports"></div>
+  </section>
 </div>
 
 <script>
@@ -637,6 +712,164 @@ async function savePlans() {
 }
 
 $("saveBtn").onclick = savePlans;
+
+// ---------- разделы ----------
+let settings = null;
+
+function showPage(name) {
+  document.querySelectorAll("#pages button").forEach((b) => b.classList.toggle("active", b.dataset.page === name));
+  document.querySelectorAll(".page").forEach((p) => { p.hidden = p.id !== `page-${name}`; });
+  if (name !== "stats") loadSettings();
+  window.scrollTo(0, name === "chat" ? document.body.scrollHeight : 0);
+}
+document.querySelectorAll("#pages button").forEach((b) => { b.onclick = () => showPage(b.dataset.page); });
+
+async function api(path, body) {
+  const resp = await fetch(`${base}/api/${path}`, body === undefined ? {} : {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw new Error(resp.status);
+  return resp.json();
+}
+
+async function loadSettings() {
+  try {
+    settings = await api("settings");
+  } catch (e) {
+    showError("Не удалось загрузить настройки. Обнови страницу.");
+    return;
+  }
+  renderStyles();
+  $("copiesToggle").checked = settings.copies;
+  renderKnowledge();
+  if (!$("chatLog").childElementCount) renderChat();
+}
+
+// ---------- AI-чат ----------
+function chatMessage(sender, text, cancelId) {
+  const m = el("div", `msg ${sender === "admin" ? "admin" : "bot"}`, text);
+  if (cancelId) {
+    const b = el("button", "btn", "🚫 Отменить задачу");
+    b.onclick = async () => {
+      b.disabled = true;
+      const r = await api("task/cancel", { id: cancelId }).catch(() => ({ ok: false }));
+      b.textContent = r.ok ? "Отменено" : "Уже нельзя отменить";
+    };
+    m.appendChild(b);
+  }
+  $("chatLog").appendChild(m);
+  return m;
+}
+
+function renderChat() {
+  $("chatLog").innerHTML = "";
+  if (!settings.chat.length) {
+    $("chatLog").appendChild(el("div", "empty", "Сегодня ты ещё ничего не спрашивал."));
+  }
+  settings.chat.forEach((m) => chatMessage(m.sender, m.text));
+  window.scrollTo(0, document.body.scrollHeight);
+}
+
+$("chatForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const text = $("chatText").value.trim();
+  if (!text || $("chatSend").disabled) return;
+  const empty = $("chatLog").querySelector(".empty");
+  if (empty) empty.remove();
+  chatMessage("admin", text);
+  $("chatText").value = "";
+  $("chatSend").disabled = true;
+  const wait = chatMessage("bot", "думаю…");
+  wait.style.opacity = "0.6";
+  window.scrollTo(0, document.body.scrollHeight);
+  try {
+    const data = await api("chat", { text });
+    wait.remove();
+    data.replies.forEach((r) => chatMessage("bot", r.text, r.cancel_task_id));
+  } catch (err) {
+    wait.textContent = "Не удалось получить ответ. Попробуй ещё раз.";
+  } finally {
+    $("chatSend").disabled = false;
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+};
+
+// ---------- настройки ----------
+function styleButtons(key, current) {
+  const seg = el("div", "seg");
+  Object.entries(settings.styles).forEach(([style, label]) => {
+    const b = el("button", style === current ? "active" : "", label);
+    b.onclick = async () => {
+      settings = await api("style", { key, style });
+      renderStyles();
+    };
+    seg.appendChild(b);
+  });
+  return seg;
+}
+
+function renderStyles() {
+  const wrap = $("styles");
+  wrap.innerHTML = "";
+  settings.employees.forEach((e) => {
+    const row = el("div", "style-row");
+    const name = el("span");
+    name.appendChild(el("b", "", e.name));
+    if (!e.connected) name.appendChild(el("span", "muted", " · не подключён"));
+    row.append(name, styleButtons(e.key, e.style));
+    wrap.appendChild(row);
+  });
+  const all = el("div", "style-row");
+  all.append(el("span", "muted", "Всем сразу"), styleButtons("all", null));
+  wrap.appendChild(all);
+}
+
+$("copiesToggle").onchange = async () => {
+  settings = await api("copies", { on: $("copiesToggle").checked });
+  $("copiesToggle").checked = settings.copies;
+};
+
+function renderKnowledge() {
+  const wrap = $("kbList");
+  wrap.innerHTML = "";
+  if (!settings.knowledge.length) {
+    wrap.appendChild(el("div", "empty", "AI пока ничего не знает о компании — добавь первые факты."));
+    return;
+  }
+  settings.knowledge.forEach((k) => {
+    const item = el("div", "kb-item");
+    const text = el("div", "text");
+    if (k.kind === "example") {
+      text.appendChild(el("div", "muted", `🎓 Образец ответа на: «${k.question}»`));
+    }
+    text.appendChild(document.createTextNode(k.text));
+    const del = el("button", "", "Удалить");
+    del.onclick = async () => {
+      if (!confirm("Удалить эту запись из базы знаний?")) return;
+      settings = await api("knowledge/delete", { id: k.id });
+      renderKnowledge();
+    };
+    item.append(text, del);
+    wrap.appendChild(item);
+  });
+}
+
+$("kbAdd").onclick = async () => {
+  const text = $("kbText").value.trim();
+  if (!text) return;
+  $("kbAdd").disabled = true;
+  try {
+    settings = await api("knowledge", { text });
+    $("kbText").value = "";
+    $("kbStatus").textContent = "✅ Сохранено — AI уже учитывает это в ответах";
+    renderKnowledge();
+  } catch (e) {
+    $("kbStatus").textContent = "Не удалось сохранить. Попробуй ещё раз.";
+  } finally {
+    $("kbAdd").disabled = false;
+  }
+};
+
 load();
 </script>
 </body>

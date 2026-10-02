@@ -2,11 +2,21 @@ import asyncio
 import logging
 from datetime import date
 
+from telegram import BotCommandScopeAllPrivateChats, MenuButtonWebApp, Update, WebAppInfo
+from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 from zoneinfo import ZoneInfo
 
-from bot import db, handlers, scheduler, webapp
-from bot.config import ADMIN_CHAT_ID, BOT_TOKEN, TIMEZONE, WEBAPP_PORT, WEBAPP_URL
+from bot import admin, db, handlers, scheduler, webapp
+from bot.config import (
+    ADMIN_CHAT_ID,
+    BOT_TOKEN,
+    TELEGRAM_MODE,
+    TIMEZONE,
+    WEBAPP_PORT,
+    WEBAPP_URL,
+    WEBHOOK_SECRET,
+)
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", level=logging.INFO
@@ -16,8 +26,56 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-def build_application() -> Application:
-    application = Application.builder().token(BOT_TOKEN).build()
+def _use_webhook() -> bool:
+    if TELEGRAM_MODE != "webhook":
+        return False
+    if not WEBAPP_URL.startswith("https://"):
+        # Telegram шлёт вебхуки только на HTTPS — без публичного адреса работаем опросом.
+        logger.warning("TELEGRAM_MODE=webhook, но WEBAPP_URL не https — перехожу на polling.")
+        return False
+    return True
+
+
+async def _set_webhook(bot):
+    await bot.set_webhook(
+        url=f"{WEBAPP_URL}{webapp.WEBHOOK_PATH}",
+        secret_token=WEBHOOK_SECRET,
+        allowed_updates=Update.ALL_TYPES,
+    )
+
+
+async def _ensure_webhook(context):
+    info = await context.bot.get_webhook_info()
+    if info.url != f"{WEBAPP_URL}{webapp.WEBHOOK_PATH}":
+        logger.warning("Вебхук был снят (url=%r) — ставлю снова.", info.url)
+        await _set_webhook(context.bot)
+
+
+async def _setup_menu(bot):
+    """Кнопка «Открыть» у поля ввода: сотрудникам — их мини-апп, руководителю — админка
+    (в ней всё, что раньше было командами). Меню команд «/» убираем — оно больше не нужно."""
+    if not WEBAPP_URL.startswith("https://"):
+        return  # Telegram открывает мини-аппы только по HTTPS
+    try:
+        await bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp("Открыть", WebAppInfo(url=WEBAPP_URL))
+        )
+        if ADMIN_CHAT_ID is not None:
+            await bot.set_chat_menu_button(
+                chat_id=ADMIN_CHAT_ID,
+                menu_button=MenuButtonWebApp("Открыть", WebAppInfo(url=admin.panel_url())),
+            )
+        await bot.delete_my_commands()
+        await bot.delete_my_commands(scope=BotCommandScopeAllPrivateChats())
+    except TelegramError:
+        logger.exception("Не удалось настроить кнопку «Открыть»")
+
+
+def build_application(webhook: bool = False) -> Application:
+    builder = Application.builder().token(BOT_TOKEN)
+    if webhook:
+        builder = builder.updater(None)  # обновления приходят в наш веб-сервер, опрос не нужен
+    application = builder.build()
 
     application.add_handler(CommandHandler("start", handlers.start))
     application.add_handler(CommandHandler("tasks", handlers.tasks_today))
@@ -67,14 +125,30 @@ async def run():
     db.init_db()
     db.generate_instances_for_date(date.today())
 
-    application = build_application()
+    webhook = _use_webhook()
+    application = build_application(webhook)
 
     await application.initialize()
     await application.start()
-    await application.updater.start_polling()
+    await _setup_menu(application.bot)
 
-    web_runner = await webapp.start_web_server(application.bot, WEBAPP_PORT)
+    web_runner = await webapp.start_web_server(
+        application.bot, WEBAPP_PORT, application.update_queue if webhook else None
+    )
     logger.info("Mini App web server listening on port %s", WEBAPP_PORT)
+
+    if webhook:
+        # Новая версия при деплое сама перенастраивает вебхук на себя. При остановке
+        # вебхук НЕ удаляем: старая версия гасится уже после старта новой и иначе
+        # отключила бы ей приём сообщений.
+        await _set_webhook(application.bot)
+        # Локальный запуск с боевым токеном (polling) снимает вебхук — возвращаем его.
+        application.job_queue.run_repeating(_ensure_webhook, interval=600, first=600,
+                                            name="ensure_webhook")
+        logger.info("Telegram: webhook (обновления приходят на WEBAPP_URL).")
+    else:
+        await application.updater.start_polling()
+        logger.info("Telegram: polling.")
     if WEBAPP_URL:
         logger.info("WEBAPP_URL=%s — бот шлёт кнопки открытия мини-аппа.", WEBAPP_URL)
     else:
@@ -85,7 +159,8 @@ async def run():
     finally:
         if web_runner is not None:
             await web_runner.cleanup()
-        await application.updater.stop()
+        if application.updater is not None:
+            await application.updater.stop()
         await application.stop()
         await application.shutdown()
 

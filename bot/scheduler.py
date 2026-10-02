@@ -4,7 +4,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import Forbidden, BadRequest
 from telegram.ext import ContextTypes
 
-from bot import checkins, db, digest, goals, handlers, texts
+from bot import checkins, db, digest, goals, texts
 from bot.config import ADMIN_CHAT_ID, AUTO_TASK_OVERDUE_GRACE_HOURS, EMPLOYEES, WEBAPP_URL
 
 
@@ -91,9 +91,7 @@ async def send_admin_summary(context: ContextTypes.DEFAULT_TYPE):
 
     text = await digest.build(today, tasks_block)
     try:
-        await context.bot.send_message(
-            chat_id=ADMIN_CHAT_ID, text=text, reply_markup=handlers.summary_keyboard(today)
-        )
+        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=text)
     except (Forbidden, BadRequest):
         pass
 

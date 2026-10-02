@@ -116,6 +116,20 @@ CREATE TABLE IF NOT EXISTS daily_metrics (
     PRIMARY KEY (employee_key, metric_date)
 );
 
+-- Факты дня из GFSupport (bot/crm_sync.py копирует их сюда каждые 5 минут). Когда CRM
+-- подключена, все цифры бота берутся отсюда; из daily_metrics — только new_connections.
+CREATE TABLE IF NOT EXISTS crm_metrics (
+    employee_key TEXT NOT NULL,
+    metric_date TEXT NOT NULL,
+    calls INTEGER, calls_answered INTEGER, calls_missed INTEGER,
+    meetings_held INTEGER, meetings_new INTEGER,
+    kp_count INTEGER, kp_sum INTEGER,
+    contracts_count INTEGER, contracts_sum INTEGER,
+    payments_sum INTEGER,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (employee_key, metric_date)
+);
+
 -- Мини-CRM: сделки по клиентам/брендам. stage — этап воронки (bot/deals.py),
 -- brand_key — название в нижнем регистре, чтобы «EVOS» и «Evos» были одной сделкой.
 CREATE TABLE IF NOT EXISTS deals (
@@ -774,10 +788,74 @@ def save_daily_metrics(employee_key: str, metric_date: str, values: dict):
 
 
 def get_metrics_between(start: str, end: str):
+    """Цифры по дням для статистики, сводки, целей и AI. С CRM — факты GFSupport (+
+    new_connections из итогов дня), без неё — самоотчёт, как раньше."""
     with get_conn() as conn:
-        return conn.execute(
+        own = conn.execute(
             "SELECT * FROM daily_metrics WHERE metric_date BETWEEN ? AND ?", (start, end)
         ).fetchall()
+        if not crm_source():
+            return own
+        facts = conn.execute(
+            "SELECT * FROM crm_metrics WHERE metric_date BETWEEN ? AND ?", (start, end)
+        ).fetchall()
+    return _merge_with_crm(own, facts)
+
+
+# Поля, которые в режиме CRM берутся из GFSupport (всё, кроме new_connections).
+CRM_METRIC_FIELDS = (
+    "calls", "meetings_held", "meetings_new", "kp_count", "kp_sum",
+    "contracts_count", "contracts_sum", "payments_sum",
+)
+_CRM_EXTRA_FIELDS = ("calls_answered", "calls_missed")
+
+
+def crm_source() -> bool:
+    """Цифры берутся из CRM: ключ задан и хотя бы одна синхронизация прошла (до неё —
+    самоотчёт, чтобы не показывать нули, пока CRM ни разу не ответила)."""
+    from bot.config import CRM_FACTS_KEY
+
+    return bool(CRM_FACTS_KEY) and get_setting("crm_synced_at") is not None
+
+
+def _merge_with_crm(own, facts) -> list:
+    """Строки как в daily_metrics: цифры — из CRM (дня нет в CRM — значит, ноль),
+    new_connections — из итогов дня. Самоотчёт по остальным полям не используется."""
+    rows = {}
+
+    def row(employee_key, day):
+        return rows.setdefault((employee_key, day), {
+            "employee_key": employee_key, "metric_date": day,
+            **{f: 0 for f in CRM_METRIC_FIELDS + _CRM_EXTRA_FIELDS}, "new_connections": None,
+        })
+
+    for f in facts:
+        r = row(f["employee_key"], f["metric_date"])
+        for field in CRM_METRIC_FIELDS + _CRM_EXTRA_FIELDS:
+            r[field] = f[field] or 0
+    for o in own:
+        row(o["employee_key"], o["metric_date"])["new_connections"] = o["new_connections"]
+    return sorted(rows.values(), key=lambda r: (r["metric_date"], r["employee_key"]))
+
+
+def replace_crm_metrics(start: str, end: str, rows: list):
+    """Перезаписывает факты CRM за период целиком: день, который в CRM обнулился,
+    тоже должен исчезнуть."""
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    fields = CRM_METRIC_FIELDS + _CRM_EXTRA_FIELDS
+    with get_conn() as conn:
+        conn.execute("DELETE FROM crm_metrics WHERE metric_date BETWEEN ? AND ?", (start, end))
+        conn.executemany(
+            f"""INSERT INTO crm_metrics (employee_key, metric_date, {", ".join(fields)}, updated_at)
+                VALUES (?, ?, {", ".join("?" * len(fields))}, ?)""",
+            [(r["employee_key"], r["metric_date"], *(r.get(f) or 0 for f in fields), now_iso)
+             for r in rows],
+        )
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('crm_synced_at', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (now_iso,),
+        )
 
 
 def get_reports_between(start: str, end: str):
@@ -857,13 +935,9 @@ def mark_goal_nudged(instance_id: int, day: str):
 
 
 def get_metric_rows(employee_key: str, start: str, end: str):
-    with get_conn() as conn:
-        return conn.execute(
-            """SELECT * FROM daily_metrics
-               WHERE employee_key = ? AND metric_date BETWEEN ? AND ?
-               ORDER BY metric_date""",
-            (employee_key, start, end),
-        ).fetchall()
+    """Цифры сотрудника по дням (с CRM — факты GFSupport, см. get_metrics_between)."""
+    rows = [r for r in get_metrics_between(start, end) if r["employee_key"] == employee_key]
+    return sorted(rows, key=lambda r: r["metric_date"])
 
 
 def get_evening_dates(employee_key: str, since: str) -> set:

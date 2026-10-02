@@ -8,7 +8,7 @@ from aiohttp import web
 from telegram import Update
 from telegram.error import BadRequest, Forbidden
 
-from bot import admin, ai, checkins, db, deals, goals, handlers, texts
+from bot import admin, ai, checkins, crm, db, deals, goals, handlers, texts
 from bot.config import ADMIN_CHAT_ID, AUTO_TASK_OVERDUE_GRACE_HOURS, WEBHOOK_SECRET
 from bot.telegram_auth import get_user, validate_init_data
 
@@ -64,6 +64,7 @@ async def handle_state(request: web.Request):
         pending_action == "start_evening"
         or (active is not None and active["kind"] == checkins.EVENING)
     )
+    crm_fact = (await crm.facts_for_day(today)).get(employee["key"]) if evening_form and crm.enabled() else None
     return web.json_response(
         {
             "employee_name": employee["full_name"],
@@ -71,12 +72,14 @@ async def handle_state(request: web.Request):
             "awaiting_answer": active is not None,
             "pending_action": pending_action,
             "evening_form": evening_form,
-            # Цифры дня из CRM — форма приходит уже заполненной ими.
-            "crm_prefill": await checkins.crm_prefill(employee) if evening_form else {},
+            # С GFSupport цифры дня известны — сотрудник вводит только новых клиентов.
             "form_fields": [
                 {"field": f, "label": label, "money": money}
                 for f, label, money in checkins.FORM_FIELDS
+                if not crm.enabled() or f not in crm.FACT_FIELDS
             ],
+            "crm_summary": crm.line(crm_fact).replace("по системе: ", "")
+            if evening_form and crm_fact else "",
         }
     )
 
@@ -271,11 +274,33 @@ def _deals_json(employee_key: str) -> dict:
     }
 
 
+async def _crm_deals_json(employee_key: str) -> dict:
+    """Открытые сделки сотрудника из GFSupport — только просмотр, двигать их — в CRM."""
+    person = (await crm.snapshot(1)).get(employee_key) or {}
+    rows = sorted(person.get("deals") or [], key=lambda d: -(d.get("days_on_stage") or 0))
+    stages = []
+    for d in rows:
+        if d.get("stage") and d["stage"] not in stages:
+            stages.append(d["stage"])
+    return {
+        "crm": True,
+        "stages": stages,
+        "deals": [
+            {"brand": d.get("brand") or "без названия", "stage": d.get("stage") or "—",
+             "days": d.get("days_on_stage") or 0, "stale": bool(d.get("stalled")),
+             "next_step": d.get("next_step") or "", "next_step_at": d.get("next_step_at") or ""}
+            for d in rows
+        ],
+    }
+
+
 async def handle_deals(request: web.Request):
     payload = await request.json()
     employee, err = _authenticate(payload)
     if err:
         return err
+    if crm.enabled():
+        return web.json_response(await _crm_deals_json(employee["key"]))
     return web.json_response(_deals_json(employee["key"]))
 
 

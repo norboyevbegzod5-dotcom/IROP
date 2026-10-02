@@ -81,7 +81,9 @@ async def build_snapshot() -> str:
 
     # Итоги месяца
     month_facts = stats.facts_between(today.replace(day=1), today)
-    lines = ["С НАЧАЛА МЕСЯЦА (сумма по вечерним отчётам):"]
+    source = ("данные CRM GFSupport; новые подключения — со слов сотрудника" if db.crm_source()
+              else "по вечерним отчётам")
+    lines = [f"С НАЧАЛА МЕСЯЦА ({source}):"]
     for e in EMPLOYEES:
         lines.append(f"- {e.full_name}: {_metrics_line(month_facts.get(e.key, {}))}")
     parts.append("\n".join(lines))
@@ -97,7 +99,7 @@ async def build_snapshot() -> str:
         key=lambda m: (m["metric_date"], m["employee_key"]),
         reverse=True,
     )
-    lines = ["ЦИФРЫ ПО ДНЯМ (из вечерних отчётов, новые сверху):"]
+    lines = [f"ЦИФРЫ ПО ДНЯМ ({source}, новые сверху):"]
     lines += [f"- {m['metric_date']} {names.get(m['employee_key'], m['employee_key'])}: {_metrics_line(m)}" for m in daily]
     if not daily:
         lines.append("- пока нет ни одного вечернего отчёта с цифрами")
@@ -158,16 +160,17 @@ async def build_snapshot() -> str:
         lines.append("- нет")
     parts.append("\n".join(lines))
 
-    # Сделки (мини-CRM)
+    # Сделки (мини-CRM) — только без GFSupport: с ней сделки уже в разделе CRM выше.
     lines = [f"СДЕЛКИ (этап и сколько дней на нём; «зависла» — {deals.STALE_DAYS}+ дней без движения):"]
-    for d in deals.board(today=today):
+    for d in ([] if crm.enabled() else deals.board(today=today)):
         lines.append(
             f"- {names.get(d['employee_key'], d['employee_key'])}: {d['brand']} — {d['stage_label']}, "
             f"{d['days']} дн." + (" (зависла)" if d["stale"] else "")
         )
     if len(lines) == 1:
         lines.append("- нет")
-    parts.append("\n".join(lines))
+    if not crm.enabled():
+        parts.append("\n".join(lines))
 
     # Сегодняшняя переписка
     lines = ["СЕГОДНЯШНИЕ СООБЩЕНИЯ СОТРУДНИКОВ БОТУ:"]

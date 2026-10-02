@@ -136,6 +136,18 @@
   .stages span { display: block; font-size: 12px; color: var(--hint); }
   .stages b { font-size: 18px; font-variant-numeric: tabular-nums; }
   .deal-row { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 9px 0; border-top: 1px solid var(--line); font-size: 14px; }
+  /* CRM */
+  .crm-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+  .crm-facts div { background: var(--bg); border-radius: 10px; padding: 8px 10px; min-width: 0; }
+  .crm-facts span { display: block; color: var(--hint); font-size: 12px; }
+  .crm-facts b { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .crm-facts .diff { font-size: 12px; font-weight: 600; color: var(--mid); }
+  .spark { display: flex; align-items: flex-end; gap: 3px; height: 44px; margin-top: 10px; }
+  .spark i { flex: 1; min-width: 4px; background: var(--accent); border-radius: 3px 3px 1px 1px; opacity: .85; }
+  .spark i.zero { background: var(--track); }
+  .crm-sub { margin-top: 12px; font-size: 13px; }
+  .crm-sub summary { color: var(--hint); font-weight: 600; }
+  .crm-list { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 3px; }
   /* Разделы */
   .pages {
     position: sticky; top: 0; z-index: 5; display: flex; background: var(--card);
@@ -232,6 +244,12 @@
 
   <h2>Команда</h2>
   <div class="grid kpis" id="kpis"></div>
+
+  <div id="crmBlock" hidden>
+    <h2>📡 Действия по CRM</h2>
+    <div class="hint" style="margin:-4px 0 10px">Факты из GFSupport за период: звонки с АТС, КП, сделки, оплаты. Звонок считается по ответственному за обращение, поэтому цифра CRM — «не меньше, чем». «Сам» — что сотрудник сказал в итогах дня.</div>
+    <div class="grid people" id="crm"></div>
+  </div>
 
   <div class="grid two">
     <div>
@@ -496,6 +514,105 @@ function renderToday() {
   });
 }
 
+// Действия сотрудников по CRM (GFSupport) рядом с их самоотчётом.
+function crmFact(label, value, self) {
+  const d = el("div");
+  d.appendChild(el("span", "", label));
+  d.appendChild(el("b", "", value));
+  // «Сам: N» — только если самоотчёт заметно расходится с CRM.
+  if (self !== null && self !== undefined && self !== false) d.appendChild(el("div", "diff", self));
+  return d;
+}
+
+function selfDiff(crmValue, selfValue, isMoney) {
+  if (!selfValue && !crmValue) return null;
+  const a = crmValue || 0, b = selfValue || 0;
+  if (Math.abs(a - b) <= Math.max(1, a * 0.25)) return null;
+  return `сам: ${isMoney ? money(b) : fmt(b)}`;
+}
+
+function crmDetails(title, items) {
+  const d = el("details", "crm-sub");
+  d.appendChild(el("summary", "", title));
+  const ul = el("ul", "crm-list");
+  items.forEach((t) => ul.appendChild(el("li", "", t)));
+  d.appendChild(ul);
+  return d;
+}
+
+function renderCrm() {
+  const any = data.crm_enabled && data.employees.some((e) => e.crm);
+  $("crmBlock").hidden = !any;
+  if (!any) return;
+  const wrap = $("crm");
+  wrap.innerHTML = "";
+  data.employees.forEach((emp) => {
+    const c = emp.crm;
+    const card = el("div", "card");
+    const head = el("div", "person-head");
+    head.appendChild(el("div", "person-name", emp.name));
+    if (!c) {
+      head.appendChild(el("div", "tag off", "нет данных в CRM"));
+      card.appendChild(head);
+      wrap.appendChild(card);
+      return;
+    }
+    const p = c.pipeline, t = c.total, f = emp.fact;
+    head.appendChild(el("div", "tag", `сделок в работе: ${p.open}`));
+    card.appendChild(head);
+
+    const facts = el("div", "crm-facts");
+    facts.append(
+      crmFact("📞 Звонки", `${fmt(t.calls)} · разговор ${fmt(t.calls_answered)}`, selfDiff(t.calls, f.calls)),
+      crmFact("🤝 Встречи: проведено / назначено", `${fmt(t.meetings_held)} / ${fmt(t.meetings_new)}`,
+              selfDiff(t.meetings_held + t.meetings_new, (f.meetings_held || 0) + (f.meetings_new || 0))),
+      crmFact("📄 КП", `${fmt(t.kp_count)} · ${money(t.kp_sum)}`, selfDiff(t.kp_count, f.kp_count)),
+      crmFact("✍️ Договоры", `${fmt(t.contracts_count)} · ${money(t.contracts_sum)}`, selfDiff(t.contracts_count, f.contracts_count)),
+      crmFact("💰 Поступило", money(t.payments_sum), selfDiff(t.payments_sum, f.payments_sum, true)),
+      crmFact("🧊 Зависло / без шага", `${fmt(p.stalled)} / ${fmt(p.no_next_step)}`),
+      crmFact("⏰ Задачи просрочены", `${fmt(c.tasks.overdue)} из ${fmt(c.tasks.open)}`),
+      crmFact("🏁 Закрыто: выиграно / проиграно", `${fmt(c.closed.won || 0)} / ${fmt(c.closed.lost || 0)}`),
+    );
+    card.appendChild(facts);
+
+    // Звонки по дням периода — видно, в какие дни человек не работал.
+    const days = Object.entries(c.days);
+    if (days.length > 1) {
+      const max = Math.max(1, ...days.map(([, v]) => v));
+      const spark = el("div", "spark");
+      days.forEach(([d, v]) => {
+        const i = el("i", v ? "" : "zero");
+        i.style.height = `${Math.max(3, (v / max) * 44)}px`;
+        i.title = `${d.split("-").reverse().slice(0, 2).join(".")}: ${v} звонков`;
+        spark.appendChild(i);
+      });
+      card.appendChild(spark);
+    }
+
+    if (c.called_today.length) {
+      const talked = c.called_today.filter((r) => r.outcome === "разговор").map((r) => r.name);
+      const missed = c.called_today.filter((r) => r.outcome !== "разговор").map((r) => r.name);
+      const items = [];
+      if (talked.length) items.push(`Поговорил: ${talked.join(", ")}`);
+      if (missed.length) items.push(`Не дозвонился: ${missed.join(", ")}`);
+      card.appendChild(crmDetails(`Кому звонил ${data.period.end.split("-").reverse().slice(0, 2).join(".")} (${c.called_today.length})`, items));
+    }
+    if (c.stuck.length) {
+      card.appendChild(crmDetails(`Зависшие сделки (${c.stuck.length})`, c.stuck.map((d) =>
+        `${d.brand || "без названия"} — ${d.stage}, ${d.days_on_stage} дн.` +
+        (d.next_step ? ` · шаг: ${d.next_step}` : " · нет следующего шага"))));
+    }
+    const lost = c.closed.lost_reasons || [];
+    if (lost.length) {
+      card.appendChild(crmDetails("Почему проигрывает", lost.map((r) => `${r.reason} — ${r.count}`)));
+    }
+    if (c.by_stage.length) {
+      card.appendChild(crmDetails("Воронка в CRM сейчас", c.by_stage.map((s) => `${s.stage} — ${s.count}`)));
+    }
+    wrap.appendChild(card);
+  });
+}
+
 // Рейтинг сотрудников по выбранной метрике за период.
 const RANK_METRICS = [
   ["calls", "Звонки"], ["meetings_new", "Встречи назначены"], ["meetings_held", "Встречи проведены"],
@@ -677,6 +794,7 @@ async function load() {
   renderPeriods();
   renderToday();
   renderKpis();
+  renderCrm();
   renderRank();
   renderFunnel();
   renderDeals();

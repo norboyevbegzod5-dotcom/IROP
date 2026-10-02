@@ -71,6 +71,8 @@ async def handle_state(request: web.Request):
             "awaiting_answer": active is not None,
             "pending_action": pending_action,
             "evening_form": evening_form,
+            # Цифры дня из CRM — форма приходит уже заполненной ими.
+            "crm_prefill": await checkins.crm_prefill(employee) if evening_form else {},
             "form_fields": [
                 {"field": f, "label": label, "money": money}
                 for f, label, money in checkins.FORM_FIELDS

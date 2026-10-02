@@ -457,7 +457,7 @@ async def admin_request(bot, text: str) -> list:
     общая (chat_messages, ключ __admin__). -> [{"text", "cancel_task_id"?}] по порядку."""
     today_str = date.today().isoformat()
     history = db.get_messages_for_day(_ADMIN_CHAT_KEY, today_str)
-    snapshot = admin_context.build_snapshot()
+    snapshot = await admin_context.build_snapshot()
 
     result = await asyncio.to_thread(ai.admin_chat, text, history, snapshot)
     if result is None:

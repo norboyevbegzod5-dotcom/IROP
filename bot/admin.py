@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 
 from aiohttp import web
 
-from bot import checkins, db, deals, digest, goals, stats, styles
+from bot import checkins, crm, db, deals, digest, goals, stats, styles
 from bot.config import ADMIN_PANEL_TOKEN, EMPLOYEES, WEBAPP_URL
 
 _STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webapp_static", "admin.html")
@@ -86,6 +86,10 @@ async def handle_data(request: web.Request):
             }
         )
 
+    crm_people = await crm.period(start, end) if crm.enabled() else {}
+    for item in employees:
+        item["crm"] = _crm_json(crm_people.get(item["key"]), start, end)
+
     goal_rows = list(db.get_open_goals()) + list(db.get_finished_goals(start.isoformat()))
     goal_list = []
     for task in goal_rows:
@@ -107,6 +111,7 @@ async def handle_data(request: web.Request):
             "evening_deadline_passed": _deadline_passed(checkins.EVENING),
             "standup_deadline_passed": _deadline_passed(checkins.STANDUP),
             "employees": employees,
+            "crm_enabled": crm.enabled(),
             "goals": goal_list,
             "deals": [dict(d, employee_name=names.get(d["employee_key"], d["employee_key"]))
                       for d in deals.board(today=today)],
@@ -125,6 +130,34 @@ async def handle_data(request: web.Request):
             ],
         }
     )
+
+
+def _crm_json(person: dict, start: date, end: date):
+    """Что делал сотрудник по CRM за период — для блока «По CRM» в админке."""
+    if not person:
+        return None
+    total = person.get("total") or {}
+    by_day = person.get("days") or {}
+    # Дни без звонков CRM не присылает — а для контроля они важнее всего: дорисовываем нули.
+    days = {}
+    for i in range((end - start).days + 1):
+        d = start + timedelta(days=i)
+        if d.weekday() in checkins.SCHEDULE[checkins.EVENING]["days"] or d.isoformat() in by_day:
+            days[d.isoformat()] = (by_day.get(d.isoformat()) or {}).get("calls") or 0
+    return {
+        "total": {f: total.get(f) or 0 for f in (*crm.FACT_FIELDS, "calls_answered", "calls_missed")},
+        "days": days,
+        "pipeline": {k: (person.get("pipeline") or {}).get(k) or 0
+                     for k in ("open", "stalled", "no_next_step", "amount_monthly")},
+        "by_stage": (person.get("pipeline") or {}).get("by_stage") or [],
+        "tasks": {k: (person.get("tasks") or {}).get(k) or 0 for k in ("open", "overdue")},
+        "closed": person.get("closed") or {},
+        "called_today": (person.get("called_today") or [])[:20],
+        "stuck": [
+            {k: d.get(k) for k in ("brand", "stage", "days_on_stage", "next_step", "amount_monthly")}
+            for d in crm.stuck_deals(person, limit=8)
+        ],
+    }
 
 
 def _deadline_passed(kind: str) -> bool:

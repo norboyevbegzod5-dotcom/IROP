@@ -5,7 +5,7 @@ import asyncio
 import json
 from datetime import date, datetime, timedelta
 
-from bot import ai, db, knowledge, stats
+from bot import ai, crm, db, knowledge, stats
 
 STANDUP = "standup"
 EVENING = "evening"
@@ -49,8 +49,30 @@ def _turns(session) -> list:
     return [t if isinstance(t, dict) else {"sender": "employee", "text": t} for t in turns]
 
 
-def _context(employee, session, query: str = "") -> dict:
+async def _crm_context(employee, session) -> dict:
+    """Что знает CRM: для итогов дня — цифры дня; для стендапа — воронка, зависшие
+    сделки и с кем говорил вчера. Пусто, если CRM не настроена или молчит."""
+    if not crm.enabled():
+        return {}
+    day = session["session_date"]
+    if session["kind"] == EVENING:
+        fact = (await crm.facts_for_day(day)).get(employee["key"])
+        return {"crm": crm.line(fact)}
+    snap = (await crm.snapshot(7)).get(employee["key"])
+    # called_today в снимке — за последний день периода; утром нужен вчерашний.
+    yesterday = date.fromisoformat(day) - timedelta(days=1)
+    prev = (await crm.period(yesterday, yesterday)).get(employee["key"])
+    lines = [crm.pipeline_line(snap), crm.deals_line(snap)]
+    called = crm.called_line(prev)
+    if called:
+        lines.append(f"вчера {called}")
+    return {"crm": "\n".join(x for x in lines if x) or "по системе: данных нет"}
+
+
+async def _context(employee, session, query: str = "") -> dict:
     return {
+        **await _crm_context(employee, session),
+        "kind": session["kind"],
         "previous_report": db.get_previous_report(employee["key"], session["id"]),
         "tasks": db.get_tasks_for_employee_on(employee["key"], session["session_date"]),
         "style": employee["rop_style"],
@@ -81,6 +103,22 @@ def _clean_metrics(raw: dict) -> dict:
     return clean
 
 
+async def _with_crm_facts(employee, day: str, metrics: dict) -> dict:
+    """Цифры, которые сотрудник не назвал (AI не спрашивает их, когда есть CRM), — из CRM."""
+    fact = (await crm.facts_for_day(day)).get(employee["key"]) if crm.enabled() else None
+    if not fact:
+        return metrics
+    return {f: (fact.get(f) if v is None and f in crm.FACT_FIELDS else v) for f, v in metrics.items()}
+
+
+async def crm_prefill(employee) -> dict:
+    """Значения формы итогов дня из CRM за сегодня (без new_connections — его CRM не знает)."""
+    if not crm.enabled():
+        return {}
+    fact = (await crm.facts_for_day()).get(employee["key"])
+    return {f: fact.get(f) or 0 for f in crm.FACT_FIELDS} if fact else {}
+
+
 def build_report(full_name: str, kind: str, session_date: str, body: str) -> str:
     return f"📋 {TITLES[kind]} — {full_name} ({session_date})\n\n{body}"
 
@@ -101,7 +139,7 @@ async def open_session(employee, kind: str, session_date: str, deadline_at):
 
     step = await asyncio.to_thread(
         ai.checkin_step,
-        employee["full_name"], TITLES[kind], GOALS[kind], [], _context(employee, session),
+        employee["full_name"], TITLES[kind], GOALS[kind], [], await _context(employee, session),
         False,
     )
     icon = "🌅" if kind == STANDUP else "🌙"
@@ -121,7 +159,7 @@ async def handle_answer(session, employee, text: str):
     step = await asyncio.to_thread(
         ai.checkin_step,
         employee["full_name"], TITLES[kind], GOALS[kind], turns,
-        _context(employee, session, text), must_finish,
+        await _context(employee, session, text), must_finish,
     )
 
     if step is None:
@@ -136,7 +174,8 @@ async def handle_answer(session, employee, text: str):
     body = step.get("report") or _transcript_report(turns)
     db.complete_session(session["id"], body)
     if kind == EVENING and isinstance(step.get("metrics"), dict):
-        db.save_daily_metrics(employee["key"], session["session_date"], _clean_metrics(step["metrics"]))
+        metrics = await _with_crm_facts(employee, session["session_date"], _clean_metrics(step["metrics"]))
+        db.save_daily_metrics(employee["key"], session["session_date"], metrics)
     report = build_report(employee["full_name"], kind, session["session_date"], body)
     return step["message"] or "Спасибо, принято ✅", report
 
@@ -189,7 +228,7 @@ async def submit_form(employee, values: dict, note: str):
     step = await asyncio.to_thread(
         ai.checkin_step,
         employee["full_name"], TITLES[EVENING], GOALS[EVENING], turns,
-        _context(employee, session, note), True,
+        await _context(employee, session, note), True,
     )
     message = (step or {}).get("message") or "Спасибо, принято ✅"
     body = (step or {}).get("report") or employee_text

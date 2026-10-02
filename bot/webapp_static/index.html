@@ -302,7 +302,7 @@
     </div>
     <div id="formPanel">
       <div class="form-title">🌙 Итоги дня</div>
-      <div class="form-sub">Заполни цифры — писать текстом не нужно.</div>
+      <div class="form-sub" id="formSub">Заполни цифры — писать текстом не нужно.</div>
       <div class="form-card" id="formFields"></div>
       <textarea id="formNote" placeholder="С кем из утреннего плана поговорил и чем закончилось? (по желанию)"></textarea>
       <div class="form-actions">
@@ -416,6 +416,7 @@ async function loadState() {
   chatEl.innerHTML = "";
   data.messages.forEach((m) => addBubble(m.sender, m.text));
   formFields = data.form_fields || [];
+  crmPrefill = data.crm_prefill || {};
   renderActions(data.pending_action, data.awaiting_answer, data.evening_form);
 }
 
@@ -425,6 +426,7 @@ const formFieldsEl = document.getElementById("formFields");
 const formNoteEl = document.getElementById("formNote");
 const formSubmitBtn = document.getElementById("formSubmit");
 let formFields = [];
+let crmPrefill = {};   // цифры дня из CRM — ими форма заполнена заранее
 
 const digitsOnly = (s) => String(s).replace(/\D/g, "");
 const groupDigits = (s) => { const d = digitsOnly(s); return d ? Number(d).toLocaleString("ru-RU") : ""; };
@@ -445,12 +447,13 @@ function formRow(f) {
     // Суммы в сумах — с пробелами по разрядам, чтобы не ошибиться в нулях.
     input.className = "fmoney";
     input.placeholder = "0 сум";
+    if (f.field in crmPrefill) input.value = groupDigits(crmPrefill[f.field]);
     input.addEventListener("input", () => { input.value = groupDigits(input.value); });
     row.append(label, input);
     return row;
   }
   input.className = "fnum";
-  input.value = "0";
+  input.value = String(crmPrefill[f.field] ?? 0);
   input.addEventListener("input", () => { input.value = digitsOnly(input.value); });
   input.addEventListener("focus", () => input.select());
   const step = (d) => () => {
@@ -472,6 +475,9 @@ function formRow(f) {
 
 function openForm() {
   if (!formFieldsEl.childElementCount) formFields.forEach((f) => formFieldsEl.appendChild(formRow(f)));
+  document.getElementById("formSub").textContent = Object.keys(crmPrefill).length
+    ? "Цифры уже подставлены из CRM. Поправь, если что-то не попало в систему, и добавь новых клиентов."
+    : "Заполни цифры — писать текстом не нужно.";
   viewChatEl.classList.add("form-open");
   document.getElementById("formPanel").scrollTop = 0;
 }

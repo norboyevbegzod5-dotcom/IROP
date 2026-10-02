@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 
 from aiohttp import web
 
-from bot import checkins, crm, db, deals, digest, goals, stats, styles
+from bot import checkins, crm, crm_sync, db, deals, digest, goals, stats, styles
 from bot.config import ADMIN_PANEL_TOKEN, EMPLOYEES, WEBAPP_URL
 
 _STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webapp_static", "admin.html")
@@ -38,6 +38,7 @@ async def handle_page(request: web.Request):
 
 async def handle_data(request: web.Request):
     _check_token(request)
+    await crm_sync.sync()
     period = request.query.get("period", "month")
     if period not in stats.PERIODS:
         period = "month"
@@ -114,7 +115,7 @@ async def handle_data(request: web.Request):
             "crm_enabled": crm.enabled(),
             "goals": goal_list,
             "deals": [dict(d, employee_name=names.get(d["employee_key"], d["employee_key"]))
-                      for d in deals.board(today=today)],
+                      for d in ([] if crm.enabled() else deals.board(today=today))],
             "deal_stages": [{"key": s, "label": deals.LABELS[s], "icon": deals.ICONS[s]}
                             for s in deals.STAGES + [deals.LOST]],
             "stale_days": deals.STALE_DAYS,

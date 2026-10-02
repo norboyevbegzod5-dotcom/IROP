@@ -247,7 +247,7 @@
 
   <div id="crmBlock" hidden>
     <h2>📡 Действия по CRM</h2>
-    <div class="hint" style="margin:-4px 0 10px">Факты из GFSupport за период: звонки с АТС, КП, сделки, оплаты. Звонок считается по ответственному за обращение, поэтому цифра CRM — «не меньше, чем». «Сам» — что сотрудник сказал в итогах дня.</div>
+    <div class="hint" style="margin:-4px 0 10px">Факты из GFSupport за период: звонки с АТС, КП, сделки, оплаты. Звонок считается по ответственному за обращение, поэтому цифра CRM — «не меньше, чем». Все цифры статистики, рейтинга, воронки и целей берутся отсюда; со слов сотрудника — только новые подключения.</div>
     <div class="grid people" id="crm"></div>
   </div>
 
@@ -295,7 +295,7 @@
     </div>
     <div class="save-row">
       <button class="btn" id="saveBtn">Сохранить планы</button>
-      <span class="hint" id="saveStatus">Продажи считаются по фактическим поступлениям денег из вечерних отчётов.</span>
+      <span class="hint" id="saveStatus">Продажи — фактические поступления денег по GFSupport; подключения — со слов сотрудника.</span>
     </div>
   </div>
 
@@ -514,21 +514,12 @@ function renderToday() {
   });
 }
 
-// Действия сотрудников по CRM (GFSupport) рядом с их самоотчётом.
-function crmFact(label, value, self) {
+// Действия сотрудников по CRM (GFSupport).
+function crmFact(label, value) {
   const d = el("div");
   d.appendChild(el("span", "", label));
   d.appendChild(el("b", "", value));
-  // «Сам: N» — только если самоотчёт заметно расходится с CRM.
-  if (self !== null && self !== undefined && self !== false) d.appendChild(el("div", "diff", self));
   return d;
-}
-
-function selfDiff(crmValue, selfValue, isMoney) {
-  if (!selfValue && !crmValue) return null;
-  const a = crmValue || 0, b = selfValue || 0;
-  if (Math.abs(a - b) <= Math.max(1, a * 0.25)) return null;
-  return `сам: ${isMoney ? money(b) : fmt(b)}`;
 }
 
 function crmDetails(title, items) {
@@ -557,18 +548,17 @@ function renderCrm() {
       wrap.appendChild(card);
       return;
     }
-    const p = c.pipeline, t = c.total, f = emp.fact;
+    const p = c.pipeline, t = c.total;
     head.appendChild(el("div", "tag", `сделок в работе: ${p.open}`));
     card.appendChild(head);
 
     const facts = el("div", "crm-facts");
     facts.append(
-      crmFact("📞 Звонки", `${fmt(t.calls)} · разговор ${fmt(t.calls_answered)}`, selfDiff(t.calls, f.calls)),
-      crmFact("🤝 Встречи: проведено / назначено", `${fmt(t.meetings_held)} / ${fmt(t.meetings_new)}`,
-              selfDiff(t.meetings_held + t.meetings_new, (f.meetings_held || 0) + (f.meetings_new || 0))),
-      crmFact("📄 КП", `${fmt(t.kp_count)} · ${money(t.kp_sum)}`, selfDiff(t.kp_count, f.kp_count)),
-      crmFact("✍️ Договоры", `${fmt(t.contracts_count)} · ${money(t.contracts_sum)}`, selfDiff(t.contracts_count, f.contracts_count)),
-      crmFact("💰 Поступило", money(t.payments_sum), selfDiff(t.payments_sum, f.payments_sum, true)),
+      crmFact("📞 Звонки", `${fmt(t.calls)} · разговор ${fmt(t.calls_answered)}`),
+      crmFact("🤝 Встречи: проведено / назначено", `${fmt(t.meetings_held)} / ${fmt(t.meetings_new)}`),
+      crmFact("📄 КП", `${fmt(t.kp_count)} · ${money(t.kp_sum)}`),
+      crmFact("✍️ Договоры", `${fmt(t.contracts_count)} · ${money(t.contracts_sum)}`),
+      crmFact("💰 Поступило", money(t.payments_sum)),
       crmFact("🧊 Зависло / без шага", `${fmt(p.stalled)} / ${fmt(p.no_next_step)}`),
       crmFact("⏰ Задачи просрочены", `${fmt(c.tasks.overdue)} из ${fmt(c.tasks.open)}`),
       crmFact("🏁 Закрыто: выиграно / проиграно", `${fmt(c.closed.won || 0)} / ${fmt(c.closed.lost || 0)}`),

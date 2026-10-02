@@ -9,7 +9,7 @@ from datetime import date, datetime, time, timedelta
 
 from telegram.error import TelegramError
 
-from bot import checkins, db
+from bot import checkins, crm_sync, db
 from bot.config import ADMIN_CHAT_ID
 
 logger = logging.getLogger(__name__)
@@ -173,6 +173,7 @@ async def _finish(bot, employee, p: dict, status: str):
 async def check_achieved(bot, employee) -> list:
     """После нового вечернего отчёта: закрывает достигнутые цели (🏆 обоим).
     -> прогресс по остальным открытым целям сотрудника."""
+    await crm_sync.sync()  # факт цели — по свежим цифрам CRM
     today = date.today()
     still_open = []
     for task in db.get_open_goals(employee["key"]):

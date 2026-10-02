@@ -416,7 +416,7 @@ async function loadState() {
   chatEl.innerHTML = "";
   data.messages.forEach((m) => addBubble(m.sender, m.text));
   formFields = data.form_fields || [];
-  crmPrefill = data.crm_prefill || {};
+  crmSummary = data.crm_summary || "";
   renderActions(data.pending_action, data.awaiting_answer, data.evening_form);
 }
 
@@ -426,7 +426,7 @@ const formFieldsEl = document.getElementById("formFields");
 const formNoteEl = document.getElementById("formNote");
 const formSubmitBtn = document.getElementById("formSubmit");
 let formFields = [];
-let crmPrefill = {};   // цифры дня из CRM — ими форма заполнена заранее
+let crmSummary = "";   // цифры дня из GFSupport — их сотрудник не вводит
 
 const digitsOnly = (s) => String(s).replace(/\D/g, "");
 const groupDigits = (s) => { const d = digitsOnly(s); return d ? Number(d).toLocaleString("ru-RU") : ""; };
@@ -447,13 +447,12 @@ function formRow(f) {
     // Суммы в сумах — с пробелами по разрядам, чтобы не ошибиться в нулях.
     input.className = "fmoney";
     input.placeholder = "0 сум";
-    if (f.field in crmPrefill) input.value = groupDigits(crmPrefill[f.field]);
     input.addEventListener("input", () => { input.value = groupDigits(input.value); });
     row.append(label, input);
     return row;
   }
   input.className = "fnum";
-  input.value = String(crmPrefill[f.field] ?? 0);
+  input.value = "0";
   input.addEventListener("input", () => { input.value = digitsOnly(input.value); });
   input.addEventListener("focus", () => input.select());
   const step = (d) => () => {
@@ -475,8 +474,8 @@ function formRow(f) {
 
 function openForm() {
   if (!formFieldsEl.childElementCount) formFields.forEach((f) => formFieldsEl.appendChild(formRow(f)));
-  document.getElementById("formSub").textContent = Object.keys(crmPrefill).length
-    ? "Цифры уже подставлены из CRM. Поправь, если что-то не попало в систему, и добавь новых клиентов."
+  document.getElementById("formSub").textContent = crmSummary
+    ? `Цифры дня — из GFSupport: ${crmSummary}. Добавь новых клиентов и комментарий.`
     : "Заполни цифры — писать текстом не нужно.";
   viewChatEl.classList.add("form-open");
   document.getElementById("formPanel").scrollTop = 0;
@@ -1046,10 +1045,13 @@ async function loadDeals() {
   if (!data.deals.length) {
     const empty = document.createElement("div");
     empty.id = "status";
-    empty.textContent = "Сделок пока нет. Называй клиентов в стендапе и итогах дня — я сам соберу их сюда.";
+    empty.textContent = data.crm
+      ? "В GFSupport у тебя нет открытых сделок."
+      : "Сделок пока нет. Называй клиентов в стендапе и итогах дня — я сам соберу их сюда.";
     dealsListEl.appendChild(empty);
     return;
   }
+  if (data.crm) { renderCrmDeals(data); return; }
   const columns = data.stages.concat([Object.assign({ icon: "✖️" }, data.lost)]);
   columns.forEach((s) => {
     const list = data.deals.filter((d) => d.stage === s.key);
@@ -1063,6 +1065,45 @@ async function loadDeals() {
     head.append(name, count);
     dealsListEl.appendChild(head);
     list.forEach((d) => dealsListEl.appendChild(dealCard(d, data.stages, data.lost)));
+  });
+}
+
+// Сделки из GFSupport — только просмотр: этап и следующий шаг меняются в CRM.
+function renderCrmDeals(data) {
+  const hint = document.createElement("div");
+  hint.className = "stage-head";
+  hint.textContent = "Твои открытые сделки в GFSupport · менять этап — в CRM";
+  dealsListEl.appendChild(hint);
+  data.stages.forEach((stage) => {
+    const list = data.deals.filter((d) => d.stage === stage);
+    const head = document.createElement("div");
+    head.className = "stage-head";
+    const name = document.createElement("span");
+    name.textContent = stage;
+    const count = document.createElement("span");
+    count.textContent = list.length;
+    head.append(name, count);
+    dealsListEl.appendChild(head);
+    list.forEach((d) => {
+      const card = document.createElement("div");
+      card.className = "deal";
+      const top = document.createElement("div");
+      top.className = "deal-top";
+      const brand = document.createElement("span");
+      brand.className = "deal-brand";
+      brand.textContent = d.brand;
+      const days = document.createElement("span");
+      days.className = "deal-days" + (d.stale ? " stale" : "");
+      days.textContent = d.stale ? `${d.days} дн. без движения` : `${d.days} дн. на этапе`;
+      top.append(brand, days);
+      const step = document.createElement("div");
+      step.className = "deal-days";
+      step.style.marginTop = "4px";
+      step.textContent = d.next_step ? `Следующий шаг: ${d.next_step}` : "⚠️ Нет следующего шага";
+      if (!d.next_step) step.classList.add("stale");
+      card.append(top, step);
+      dealsListEl.appendChild(card);
+    });
   });
 }
 

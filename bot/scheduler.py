@@ -4,7 +4,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import Forbidden, BadRequest
 from telegram.ext import ContextTypes
 
-from bot import checkins, db, digest, goals, texts
+from bot import checkins, crm_sync, db, digest, goals, texts
 from bot.config import ADMIN_CHAT_ID, AUTO_TASK_OVERDUE_GRACE_HOURS, EMPLOYEES, WEBAPP_URL
 
 
@@ -205,3 +205,4 @@ def register_jobs(job_queue, tzinfo):
     job_queue.run_repeating(
         check_checkin_deadlines, interval=60, first=20, name="check_checkin_deadlines"
     )
+    job_queue.run_repeating(crm_sync.sync_job, interval=300, first=5, name="crm_sync")

@@ -4,7 +4,7 @@
 import asyncio
 from datetime import date, timedelta
 
-from bot import ai, checkins, crm, db, deals, goals, stats
+from bot import ai, checkins, crm, crm_sync, db, deals, goals, stats
 from bot.config import EMPLOYEES
 
 _WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
@@ -86,7 +86,8 @@ def collect(today: date) -> dict:
     since = (today - timedelta(days=_STREAK_LOOKBACK)).isoformat()
     metrics_today = {m["employee_key"]: m for m in db.get_metrics_between(today_str, today_str)}
     open_goals = goals.open_progress(today=today)
-    stale_deals = deals.stale(today)
+    # С CRM сделки — только из GFSupport (см. _add_crm), своя мини-CRM скрыта.
+    stale_deals = [] if crm.enabled() else deals.stale(today)
 
     people = []
     for e in EMPLOYEES:
@@ -147,22 +148,31 @@ def numbers_block(facts: dict, today: date) -> str:
             lines.append("К обычному дню этих же людей: " + " · ".join(deltas))
 
     lines.append("")
+    from_crm = db.crm_source()
     for p in people:
-        if p["metrics_today"]:
-            lines.append(f"{p['name']}: {metrics_line(p['metrics_today'])}")
+        # С CRM у каждого есть цифры (нет дня в CRM — ноль); итоги дня — отдельная отметка.
+        m = p["metrics_today"] or ({f: 0 for f in db.METRIC_FIELDS} if from_crm else None)
+        if m:
+            line = f"{p['name']}: {metrics_line(m)}"
+            if from_crm and not p["evening_done"]:
+                line += " · ❌ итоги не сданы"
+            lines.append(line)
         elif p["evening_done"]:
             lines.append(f"{p['name']}: итоги сданы, цифр AI не нашёл")
         else:
             lines.append(f"{p['name']}: ❌ нет итогов дня")
-        if p.get("crm_today"):
-            lines.append(f"   {crm_line(p['crm_today'])}")
-    if reported or any(p.get("crm_today") for p in people):
-        lines.append(LEGEND)
+    if reported or from_crm:
+        lines.append(LEGEND + (" — по данным GFSupport" if from_crm else ""))
     return "\n".join(lines)
 
 
 def stale_deals_block(facts: dict) -> str:
     names = {p["key"]: p["name"] for p in facts["employees"]}
+    if crm.enabled():
+        lines = [f"{p['name']} — {d.get('brand') or 'без названия'}: {d.get('stage')}, "
+                 f"{d.get('days_on_stage')} дн." + ("" if d.get("next_step") else ", нет следующего шага")
+                 for p in facts["employees"] for d in p.get("crm_stuck") or []]
+        return "\n".join(["🧊 Зависшие сделки (GFSupport):", *lines]) if lines else ""
     lines = [f"{names.get(d['employee_key'], d['employee_key'])} — {d['brand']}: "
              f"{d['stage_label']}, {d['days']} дн. без движения"
              for d in sorted(deals.stale(), key=lambda d: -d["days"])[:8]]
@@ -180,29 +190,23 @@ async def _add_crm(facts: dict, today: date):
     """Факты CRM рядом с самоотчётом: для строки сводки и для выводов AI."""
     if not crm.enabled():
         return
-    day = await crm.facts_for_day(today.isoformat())
     week = await crm.snapshot(7)
     for p in facts["employees"]:
-        fact, snap = day.get(p["key"]), week.get(p["key"])
-        p["crm_today"] = {f: fact.get(f) for f in (*crm.FACT_FIELDS, "calls_answered")} if fact else None
+        snap = week.get(p["key"])
         if snap:
             p["crm_pipeline"] = crm.pipeline_line(snap)
             p["crm_stuck_deals"] = crm.deals_line(snap)
             p["crm_called_today"] = crm.called_line(snap)
-
-
-def crm_line(fact: dict) -> str:
-    return (f"по CRM: 📞 {fact.get('calls') or 0} (разговор {fact.get('calls_answered') or 0}) · "
-            f"📅 {fact.get('meetings_new') or 0} · 📄 {fact.get('kp_count') or 0} · "
-            f"✍️ {fact.get('contracts_count') or 0} · 💰 {short_money(fact.get('payments_sum') or 0)}")
+            p["crm_stuck"] = crm.stuck_deals(snap, limit=3)
 
 
 async def build(today: date, tasks_block: str = "") -> str:
+    await crm_sync.sync(force=True)
     facts = collect(today)
     await _add_crm(facts, today)
     parts = [numbers_block(facts, today)]
 
-    if any(p["standup_report"] or p["evening_report"] or p.get("crm_today") for p in facts["employees"]):
+    if db.crm_source() or any(p["standup_report"] or p["evening_report"] for p in facts["employees"]):
         insights = await asyncio.to_thread(ai.daily_insights, facts)
         if insights:
             parts.append(insights)

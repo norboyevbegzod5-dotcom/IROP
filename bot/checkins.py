@@ -111,14 +111,6 @@ async def _with_crm_facts(employee, day: str, metrics: dict) -> dict:
     return {f: (fact.get(f) if v is None and f in crm.FACT_FIELDS else v) for f, v in metrics.items()}
 
 
-async def crm_prefill(employee) -> dict:
-    """Значения формы итогов дня из CRM за сегодня (без new_connections — его CRM не знает)."""
-    if not crm.enabled():
-        return {}
-    fact = (await crm.facts_for_day()).get(employee["key"])
-    return {f: fact.get(f) or 0 for f in crm.FACT_FIELDS} if fact else {}
-
-
 def build_report(full_name: str, kind: str, session_date: str, body: str) -> str:
     return f"📋 {TITLES[kind]} — {full_name} ({session_date})\n\n{body}"
 
@@ -220,7 +212,8 @@ async def submit_form(employee, values: dict, note: str):
     if session is None:
         return None
 
-    metrics = _clean_metrics(values)
+    # С CRM в форме только new_connections — остальные цифры берутся из GFSupport.
+    metrics = await _with_crm_facts(employee, today, _clean_metrics(values))
     note = (note or "").strip()[:2000]
     employee_text = _form_text(metrics, note)
     turns = db.append_checkin_turn(session["id"], "employee", employee_text)

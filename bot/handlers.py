@@ -6,7 +6,7 @@ from telegram.constants import ChatAction
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import ContextTypes
 
-from bot import admin_context, ai, checkins, db, deals, digest, goals, knowledge, styles, texts
+from bot import admin_context, ai, checkins, crm, db, deals, digest, goals, knowledge, styles, texts
 from bot.config import (
     ADMIN_CHAT_ID,
     AUTO_TASK_DEFAULT_DEADLINE,
@@ -807,7 +807,8 @@ async def process_tasks(bot, employee, text: str) -> list:
             ),
         )
 
-    changes = deals.apply_mentions(employee["key"], result["deals"])
+    # С GFSupport сделки ведутся там — своя мини-CRM не обновляется, чтобы не было двух списков.
+    changes = [] if crm.enabled() else deals.apply_mentions(employee["key"], result["deals"])
     if changes:
         notices.append(deals.change_notice(changes))
         await notify_deal_paid(bot, employee, [(b, s) for _, b, s, _ in changes])

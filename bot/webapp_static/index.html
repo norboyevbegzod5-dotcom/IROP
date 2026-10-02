@@ -68,6 +68,7 @@
     line-height: 18px;
   }
   .badge.alert { background: #e53935; color: #fff; }
+  .badge[hidden] { display: none; }   /* иначе display: inline-block перебивает hidden и висит «0» */
   .view { display: none; flex: 1; min-height: 0; flex-direction: column; }
   .view.active { display: flex; }
   #view-tasks { overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding: 12px; gap: 10px; }

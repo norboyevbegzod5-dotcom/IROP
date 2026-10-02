@@ -40,19 +40,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
     if _is_admin(chat_id):
-        await update.message.reply_text(
-            f"Привет, руководитель. Я {BOT_NAME}. Команды:\n"
-            f"/admin — админка: планы и статистика по отчётам\n"
-            f"/copies — присылать ли копии диалогов сотрудников с AI\n"
-            f"/status — статус за сегодня\n"
-            f"/team — кто из команды подключился\n"
-            f"/style — характер AI-РОПа (строгий или мотиватор)\n"
-            f"/learn — научить AI: факты, цены, скрипты, ответы на возражения\n"
-            f"/knowledge — что AI уже знает; /forget номер — удалить запись\n\n"
-            f"💬 Спрашивай меня о команде текстом или голосом: «сколько встреч сегодня "
-            f"сделали ребята?», «кто не сдал итоги дня?». Поручение сотруднику — тоже просто "
-            f"напиши: «Аслбеку 150 звонков за неделю»."
-        )
+        await update.message.reply_text(texts.admin_welcome(BOT_NAME))
         return
 
     employee = db.get_employee_by_chat(chat_id)
@@ -227,12 +215,16 @@ async def on_style_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 _COPIES_SETTING = "dialog_copies"
 
 
-def _dialog_copies_on() -> bool:
+def dialog_copies_on() -> bool:
     return db.get_setting(_COPIES_SETTING, "off") == "on"
 
 
+def set_dialog_copies(on: bool):
+    db.set_setting(_COPIES_SETTING, "on" if on else "off")
+
+
 def _copies_menu():
-    on = _dialog_copies_on()
+    on = dialog_copies_on()
     keyboard = InlineKeyboardMarkup(
         [[InlineKeyboardButton(
             "🔕 Выключить копии" if on else "🔔 Включить копии",
@@ -266,18 +258,6 @@ async def on_copies_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         pass
 
 
-def summary_keyboard(day: date):
-    """Кнопки под вечерней сводкой: админка и все отчёты дня целиком."""
-    from bot import admin  # локально: admin тянет aiohttp
-
-    row = []
-    url = admin.panel_url()
-    if url:
-        row.append(InlineKeyboardButton("📊 Админка", web_app=WebAppInfo(url=url)))
-    row.append(InlineKeyboardButton("📄 Отчёты целиком", callback_data=f"reports:{day.isoformat()}"))
-    return InlineKeyboardMarkup([row])
-
-
 async def on_reports_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not _is_admin(query.message.chat_id):
@@ -298,19 +278,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(texts.admin_only())
         return
 
-    from bot import admin  # локально: admin тянет aiohttp, handlers он нужен только тут
-
-    url = admin.panel_url()
-    if not url:
-        await update.message.reply_text(texts.admin_panel_no_url())
-        return
-    keyboard = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("📊 Открыть в Telegram", web_app=WebAppInfo(url=url))],
-            [InlineKeyboardButton("🌐 Открыть в браузере", url=url)],
-        ]
-    )
-    await update.message.reply_text(texts.admin_panel_link(url), reply_markup=keyboard)
+    await update.message.reply_text(texts.admin_open_hint())
 
 
 # ---------- обучение AI ----------
@@ -473,25 +441,42 @@ _ADMIN_CHAT_KEY = "__admin__"  # переписка руководителя с 
 
 async def _admin_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    for reply in await admin_request(context.bot, text):
+        keyboard = None
+        if reply.get("cancel_task_id"):
+            keyboard = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🚫 Отменить", callback_data=f"cancel:{reply['cancel_task_id']}")]]
+            )
+        body = reply["text"]
+        for start in range(0, len(body), _TELEGRAM_LIMIT):
+            await update.message.reply_text(body[start:start + _TELEGRAM_LIMIT], reply_markup=keyboard)
+
+
+async def admin_request(bot, text: str) -> list:
+    """Вопрос или поручение руководителя — и из чата с ботом, и из мини-аппа. Переписка
+    общая (chat_messages, ключ __admin__). -> [{"text", "cancel_task_id"?}] по порядку."""
     today_str = date.today().isoformat()
     history = db.get_messages_for_day(_ADMIN_CHAT_KEY, today_str)
     snapshot = admin_context.build_snapshot()
 
     result = await asyncio.to_thread(ai.admin_chat, text, history, snapshot)
     if result is None:
-        await update.message.reply_text(texts.ai_error())
-        return
+        return [{"text": texts.ai_error()}]
 
     db.log_message(_ADMIN_CHAT_KEY, today_str, "admin", text)
     kind, payload = result
     if kind == "task":
-        db.log_message(_ADMIN_CHAT_KEY, today_str, "bot", f"(поставлена задача: {payload.get('title') or text})")
-        await _assign_task(update, context, payload, text)
-        return
+        replies = await _assign_task(bot, payload, text)
+        db.log_message(_ADMIN_CHAT_KEY, today_str, "bot", "\n\n".join(r["text"] for r in replies))
+        return replies
 
     db.log_message(_ADMIN_CHAT_KEY, today_str, "bot", payload)
-    for start in range(0, len(payload), _TELEGRAM_LIMIT):
-        await update.message.reply_text(payload[start:start + _TELEGRAM_LIMIT])
+    return [{"text": payload}]
+
+
+def admin_history(day: str) -> list:
+    return [{"sender": m["sender"], "text": m["text"]}
+            for m in db.get_messages_for_day(_ADMIN_CHAT_KEY, day)]
 
 
 async def admin_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -511,8 +496,9 @@ async def admin_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _admin_ai_message(update, context, text)
 
 
-async def _assign_task(update: Update, context: ContextTypes.DEFAULT_TYPE, parsed: dict, text: str):
-    """Ставит поручение руководителя сотруднику (или всем) по разбору AI."""
+async def _assign_task(bot, parsed: dict, text: str) -> list:
+    """Ставит поручение руководителя сотруднику (или всем) по разбору AI.
+    -> подтверждения для руководителя ({"text", "cancel_task_id"?})."""
     employee_key = parsed.get("employee_key")
     title = (parsed.get("title") or text)[:120]
     description = parsed.get("description") or text
@@ -521,8 +507,7 @@ async def _assign_task(update: Update, context: ContextTypes.DEFAULT_TYPE, parse
         deadline_days = 1
 
     if employee_key not in _EMPLOYEE_KEYS and employee_key != "all":
-        await update.message.reply_text(texts.manual_task_unclear())
-        return
+        return [{"text": texts.manual_task_unclear()}]
 
     targets = EMPLOYEES if employee_key == "all" else [
         next(e for e in EMPLOYEES if e.key == employee_key)
@@ -543,6 +528,7 @@ async def _assign_task(update: Update, context: ContextTypes.DEFAULT_TYPE, parse
         goal_line = ""
     today_str = date.today().isoformat()
 
+    replies = []
     for emp in targets:
         instance_id = db.create_manual_task(
             emp.key, title, description, deadline_at, today_str, metric=metric, target=target
@@ -554,8 +540,6 @@ async def _assign_task(update: Update, context: ContextTypes.DEFAULT_TYPE, parse
             task_text += goal_line
             buttons = [[InlineKeyboardButton("🖐 Принять", callback_data=f"accept:{instance_id}")]]
             if WEBAPP_URL:
-                from telegram import WebAppInfo
-
                 buttons.append(
                     [
                         InlineKeyboardButton(
@@ -564,21 +548,36 @@ async def _assign_task(update: Update, context: ContextTypes.DEFAULT_TYPE, parse
                         )
                     ]
                 )
-            keyboard = InlineKeyboardMarkup(buttons)
             try:
-                await context.bot.send_message(
-                    chat_id=employee_row["chat_id"], text=task_text, reply_markup=keyboard
+                await bot.send_message(
+                    chat_id=employee_row["chat_id"], text=task_text,
+                    reply_markup=InlineKeyboardMarkup(buttons),
                 )
             except (Forbidden, BadRequest):
                 pass
-            confirm_text = texts.manual_task_confirmation(emp.full_name, title, deadline_str)
-            confirm_text += goal_line
-            confirm_keyboard = InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🚫 Отменить", callback_data=f"cancel:{instance_id}")]]
-            )
-            await update.message.reply_text(confirm_text, reply_markup=confirm_keyboard)
+            replies.append({
+                "text": texts.manual_task_confirmation(emp.full_name, title, deadline_str) + goal_line,
+                "cancel_task_id": instance_id,
+            })
         else:
-            await update.message.reply_text(texts.manual_task_unregistered(emp.full_name))
+            replies.append({"text": texts.manual_task_unregistered(emp.full_name)})
+    return replies
+
+
+async def cancel_assigned_task(bot, instance_id: int) -> bool:
+    """Отменяет задачу и сообщает сотруднику. False — задачи нет или её уже не отменить."""
+    instance = db.get_instance(instance_id)
+    if instance is None or not db.cancel_task(instance_id):
+        return False
+    employee = db.get_employee(instance["employee_key"])
+    if employee and employee["chat_id"]:
+        try:
+            await bot.send_message(
+                chat_id=employee["chat_id"], text=texts.task_cancelled_employee(instance["title"])
+            )
+        except (Forbidden, BadRequest):
+            pass
+    return True
 
 
 async def on_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -594,20 +593,9 @@ async def on_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.answer("Задача не найдена.", show_alert=True)
         return
 
-    ok = db.cancel_task(instance_id)
-    if not ok:
+    if not await cancel_assigned_task(context.bot, instance_id):
         await query.answer(texts.task_already_uncancellable(), show_alert=True)
         return
-
-    employee = db.get_employee(instance["employee_key"])
-    if employee and employee["chat_id"]:
-        try:
-            await context.bot.send_message(
-                chat_id=employee["chat_id"],
-                text=texts.task_cancelled_employee(instance["title"]),
-            )
-        except (Forbidden, BadRequest):
-            pass
 
     await query.answer("Отменено")
     await query.edit_message_text(f"🚫 Отменено: {instance['title']}")
@@ -670,7 +658,7 @@ async def ai_chat_reply(bot, employee, text: str) -> str:
 
     # Обычные диалоги руководитель видит, только если включил копии в /copies;
     # вопросы, которые AI передал руководителю, приходят всегда.
-    if ADMIN_CHAT_ID is not None and (escalate or _dialog_copies_on()):
+    if ADMIN_CHAT_ID is not None and (escalate or dialog_copies_on()):
         try:
             copy = await bot.send_message(
                 chat_id=ADMIN_CHAT_ID,

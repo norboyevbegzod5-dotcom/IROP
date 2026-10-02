@@ -2,11 +2,12 @@ import asyncio
 import logging
 from datetime import date
 
-from telegram import Update
+from telegram import BotCommandScopeAllPrivateChats, MenuButtonWebApp, Update, WebAppInfo
+from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 from zoneinfo import ZoneInfo
 
-from bot import db, handlers, scheduler, webapp
+from bot import admin, db, handlers, scheduler, webapp
 from bot.config import (
     ADMIN_CHAT_ID,
     BOT_TOKEN,
@@ -48,6 +49,26 @@ async def _ensure_webhook(context):
     if info.url != f"{WEBAPP_URL}{webapp.WEBHOOK_PATH}":
         logger.warning("Вебхук был снят (url=%r) — ставлю снова.", info.url)
         await _set_webhook(context.bot)
+
+
+async def _setup_menu(bot):
+    """Кнопка «Открыть» у поля ввода: сотрудникам — их мини-апп, руководителю — админка
+    (в ней всё, что раньше было командами). Меню команд «/» убираем — оно больше не нужно."""
+    if not WEBAPP_URL.startswith("https://"):
+        return  # Telegram открывает мини-аппы только по HTTPS
+    try:
+        await bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp("Открыть", WebAppInfo(url=WEBAPP_URL))
+        )
+        if ADMIN_CHAT_ID is not None:
+            await bot.set_chat_menu_button(
+                chat_id=ADMIN_CHAT_ID,
+                menu_button=MenuButtonWebApp("Открыть", WebAppInfo(url=admin.panel_url())),
+            )
+        await bot.delete_my_commands()
+        await bot.delete_my_commands(scope=BotCommandScopeAllPrivateChats())
+    except TelegramError:
+        logger.exception("Не удалось настроить кнопку «Открыть»")
 
 
 def build_application(webhook: bool = False) -> Application:
@@ -109,6 +130,7 @@ async def run():
 
     await application.initialize()
     await application.start()
+    await _setup_menu(application.bot)
 
     web_runner = await webapp.start_web_server(
         application.bot, WEBAPP_PORT, application.update_queue if webhook else None

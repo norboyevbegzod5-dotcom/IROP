@@ -4,7 +4,7 @@
 import asyncio
 from datetime import date, timedelta
 
-from bot import ai, checkins, db, goals, stats
+from bot import ai, checkins, db, deals, goals, stats
 from bot.config import EMPLOYEES
 
 _WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
@@ -86,6 +86,7 @@ def collect(today: date) -> dict:
     since = (today - timedelta(days=_STREAK_LOOKBACK)).isoformat()
     metrics_today = {m["employee_key"]: m for m in db.get_metrics_between(today_str, today_str)}
     open_goals = goals.open_progress(today=today)
+    stale_deals = deals.stale(today)
 
     people = []
     for e in EMPLOYEES:
@@ -108,6 +109,10 @@ def collect(today: date) -> dict:
                 {"title": p["title"], "metric": p["metric_label"], "fact": p["fact"], "target": p["target"],
                  "state": p["state"], "per_day_needed": p["per_day"], "until": p["end"]}
                 for p in open_goals if p["employee_key"] == e.key
+            ],
+            "stale_deals": [
+                {"client": d["brand"], "stage": d["stage_label"], "days_without_movement": d["days"]}
+                for d in stale_deals if d["employee_key"] == e.key
             ],
         })
     return {"date": today_str, "weekday": _WEEKDAYS[today.weekday()], "employees": people}
@@ -154,6 +159,14 @@ def numbers_block(facts: dict, today: date) -> str:
     return "\n".join(lines)
 
 
+def stale_deals_block(facts: dict) -> str:
+    names = {p["key"]: p["name"] for p in facts["employees"]}
+    lines = [f"{names.get(d['employee_key'], d['employee_key'])} — {d['brand']}: "
+             f"{d['stage_label']}, {d['days']} дн. без движения"
+             for d in sorted(deals.stale(), key=lambda d: -d["days"])[:8]]
+    return "\n".join(["🧊 Зависшие сделки:", *lines]) if lines else ""
+
+
 def goals_block(facts: dict) -> str:
     names = {p["key"]: p["name"] for p in facts["employees"]}
     lines = [f"{names.get(g['employee_key'], g['employee_key'])} — {goals.short_line(g)}"
@@ -170,7 +183,7 @@ async def build(today: date, tasks_block: str = "") -> str:
         if insights:
             parts.append(insights)
 
-    for block in (goals_block(facts), tasks_block):
+    for block in (goals_block(facts), stale_deals_block(facts), tasks_block):
         if block:
             parts.append(block)
 

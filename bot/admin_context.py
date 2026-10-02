@@ -4,7 +4,7 @@
 
 from datetime import date, datetime, timedelta
 
-from bot import checkins, db, goals, stats
+from bot import checkins, db, deals, goals, stats
 from bot.config import EMPLOYEES
 
 METRICS_DAYS = 31        # цифры по дням — за месяц
@@ -125,6 +125,17 @@ def build_snapshot() -> str:
             f"до {p['end']}, {p['state_label']}"
             + (f", нужно {goals.fmt(p['metric'], p['per_day'])} в день" if p["per_day"] else "")
             + (f", прогноз {goals.fmt(p['metric'], p['forecast'])}" if p["forecast"] is not None else "")
+        )
+    if len(lines) == 1:
+        lines.append("- нет")
+    parts.append("\n".join(lines))
+
+    # Сделки (мини-CRM)
+    lines = [f"СДЕЛКИ (этап и сколько дней на нём; «зависла» — {deals.STALE_DAYS}+ дней без движения):"]
+    for d in deals.board(today=today):
+        lines.append(
+            f"- {names.get(d['employee_key'], d['employee_key'])}: {d['brand']} — {d['stage_label']}, "
+            f"{d['days']} дн." + (" (зависла)" if d["stale"] else "")
         )
     if len(lines) == 1:
         lines.append("- нет")

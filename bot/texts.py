@@ -283,3 +283,7 @@ def goal_line(icon: str, target_str: str) -> str:
 
 def admin_tasks_header() -> str:
     return "📋 Задачи на сегодня:"
+
+
+def deal_paid_admin(full_name: str, brand: str) -> str:
+    return f"💰 {full_name}: оплата по сделке «{brand}»."

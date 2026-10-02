@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+from datetime import date, datetime, timedelta
 
 from bot import ai, db, knowledge, stats
 
@@ -138,3 +139,60 @@ async def handle_answer(session, employee, text: str):
         db.save_daily_metrics(employee["key"], session["session_date"], _clean_metrics(step["metrics"]))
     report = build_report(employee["full_name"], kind, session["session_date"], body)
     return step["message"] or "Спасибо, принято ✅", report
+
+
+# ---------- итоги дня формой (мини-апп) ----------
+
+# Поля формы в порядке показа: (поле daily_metrics, подпись, деньги ли).
+FORM_FIELDS = [
+    ("calls", "📞 Звонков сделано", False),
+    ("meetings_held", "🤝 Встреч проведено", False),
+    ("meetings_new", "📅 Новых встреч назначено", False),
+    ("kp_count", "📄 КП отправлено", False),
+    ("kp_sum", "📄 КП на сумму", True),
+    ("contracts_count", "✍️ Договоров подписано", False),
+    ("contracts_sum", "✍️ Договоры на сумму", True),
+    ("payments_sum", "💰 Поступило денег", True),
+    ("new_connections", "🔌 Новых клиентов подключено", False),
+]
+
+
+def _form_text(metrics: dict, note: str) -> str:
+    """Как форма выглядит в чате и в диалоге для AI."""
+    lines = []
+    for field, label, money in FORM_FIELDS:
+        value = metrics.get(field) or 0
+        lines.append(f"{label}: " + (f"{value:,}".replace(",", " ") + " сум" if money else str(value)))
+    if note:
+        lines += ["", note]
+    return "\n".join(lines)
+
+
+async def submit_form(employee, values: dict, note: str):
+    """Итоги дня, заполненные формой: цифры сохраняются как есть (без разбора AI), AI
+    пишет только фидбэк и отчёт руководителю. -> (текст в чат от сотрудника, ответ
+    бота, отчёт руководителю) или None, если итоги за сегодня уже сданы."""
+    today = date.today().isoformat()
+    if EVENING in db.get_completed_checkin_kinds(employee["key"], today):
+        return None
+    deadline_at = datetime.now() + timedelta(minutes=SCHEDULE[EVENING]["deadline_minutes"])
+    db.start_checkin_session(employee["key"], today, EVENING, deadline_at)
+    session = db.get_active_session(employee["key"], EVENING)
+    if session is None:
+        return None
+
+    metrics = _clean_metrics(values)
+    note = (note or "").strip()[:2000]
+    employee_text = _form_text(metrics, note)
+    turns = db.append_checkin_turn(session["id"], "employee", employee_text)
+
+    step = await asyncio.to_thread(
+        ai.checkin_step,
+        employee["full_name"], TITLES[EVENING], GOALS[EVENING], turns,
+        _context(employee, session, note), True,
+    )
+    message = (step or {}).get("message") or "Спасибо, принято ✅"
+    body = (step or {}).get("report") or employee_text
+    db.complete_session(session["id"], body)
+    db.save_daily_metrics(employee["key"], today, metrics)
+    return employee_text, message, build_report(employee["full_name"], EVENING, today, body)

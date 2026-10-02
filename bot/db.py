@@ -116,6 +116,19 @@ CREATE TABLE IF NOT EXISTS daily_metrics (
     PRIMARY KEY (employee_key, metric_date)
 );
 
+-- Мини-CRM: сделки по клиентам/брендам. stage — этап воронки (bot/deals.py),
+-- brand_key — название в нижнем регистре, чтобы «EVOS» и «Evos» были одной сделкой.
+CREATE TABLE IF NOT EXISTS deals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_key TEXT NOT NULL,
+    brand TEXT NOT NULL,
+    brand_key TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    stage_changed_at TEXT NOT NULL,
+    UNIQUE(employee_key, brand_key)
+);
+
 -- Копии диалогов «вопрос сотрудника → ответ AI», отправленные руководителю:
 -- по admin_message_id узнаём, на какой диалог руководитель ответил исправлением.
 CREATE TABLE IF NOT EXISTS ai_dialogs (
@@ -871,3 +884,47 @@ def get_session_on(employee_key: str, session_date: str, kind: str):
             "SELECT * FROM checkin_sessions WHERE employee_key = ? AND session_date = ? AND kind = ?",
             (employee_key, session_date, kind),
         ).fetchone()
+
+
+# ---------- мини-CRM: сделки ----------
+
+def find_deal(employee_key: str, brand_key: str):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM deals WHERE employee_key = ? AND brand_key = ?", (employee_key, brand_key)
+        ).fetchone()
+
+
+def get_deal(deal_id: int):
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM deals WHERE id = ?", (deal_id,)).fetchone()
+
+
+def create_deal(employee_key: str, brand: str, brand_key: str, stage: str) -> int:
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO deals
+               (employee_key, brand, brand_key, stage, created_at, stage_changed_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (employee_key, brand, brand_key, stage, now_iso, now_iso),
+        )
+        return cur.lastrowid
+
+
+def set_deal_stage(deal_id: int, stage: str):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE deals SET stage = ?, stage_changed_at = ? WHERE id = ?",
+            (stage, datetime.now().isoformat(timespec="seconds"), deal_id),
+        )
+
+
+def get_deals(employee_key: str = None):
+    sql = "SELECT * FROM deals"
+    params = ()
+    if employee_key:
+        sql += " WHERE employee_key = ?"
+        params = (employee_key,)
+    with get_conn() as conn:
+        return conn.execute(sql + " ORDER BY stage_changed_at DESC", params).fetchall()

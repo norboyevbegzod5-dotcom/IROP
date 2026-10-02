@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 
 from aiohttp import web
 
-from bot import checkins, db, digest, goals, stats, styles
+from bot import checkins, db, deals, digest, goals, stats, styles
 from bot.config import ADMIN_PANEL_TOKEN, EMPLOYEES, WEBAPP_URL
 
 _STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webapp_static", "admin.html")
@@ -108,6 +108,11 @@ async def handle_data(request: web.Request):
             "standup_deadline_passed": _deadline_passed(checkins.STANDUP),
             "employees": employees,
             "goals": goal_list,
+            "deals": [dict(d, employee_name=names.get(d["employee_key"], d["employee_key"]))
+                      for d in deals.board(today=today)],
+            "deal_stages": [{"key": s, "label": deals.LABELS[s], "icon": deals.ICONS[s]}
+                            for s in deals.STAGES + [deals.LOST]],
+            "stale_days": deals.STALE_DAYS,
             "reports": [
                 {
                     "name": names.get(r["employee_key"], r["employee_key"]),

@@ -11,6 +11,8 @@ from bot.config import ADMIN_CHAT_ID, BOT_TOKEN, TIMEZONE, WEBAPP_PORT, WEBAPP_U
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", level=logging.INFO
 )
+# httpx на INFO пишет полный адрес каждого запроса к Telegram, а в нём токен бота.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 

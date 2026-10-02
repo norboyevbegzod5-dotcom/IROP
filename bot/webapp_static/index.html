@@ -228,12 +228,62 @@
     font-size: 13px;
     padding: 20px;
   }
+  .action-btn.secondary { background: var(--bubble-bot); color: var(--text); }
+  /* Итоги дня формой */
+  #formPanel { display: none; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 12px; }
+  #view-chat.form-open #formPanel { display: block; }
+  #view-chat.form-open #chat, #view-chat.form-open #actions, #view-chat.form-open #inputbar { display: none !important; }
+  .form-title { font-size: 17px; font-weight: 700; margin: 2px 2px 4px; }
+  .form-sub { font-size: 13px; color: var(--hint); margin: 0 2px 10px; }
+  .form-card { background: var(--bubble-bot); border-radius: 14px; padding: 4px 12px; }
+  .frow { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid rgba(128,128,128,0.18); }
+  .frow:last-child { border-bottom: 0; }
+  .frow label { font-size: 15px; min-width: 0; }
+  .stepper { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+  .sbtn {
+    width: 34px; height: 34px; border: none; border-radius: 10px; flex-shrink: 0;
+    background: var(--bg); color: var(--button); font-size: 20px; font-weight: 700; cursor: pointer;
+  }
+  .fnum, .fmoney {
+    border: 1px solid rgba(128,128,128,0.3); border-radius: 10px; background: var(--bg); color: var(--text);
+    font-size: 16px; font-weight: 600; text-align: center; font-variant-numeric: tabular-nums; padding: 6px 4px;
+  }
+  .fnum { width: 54px; }
+  .fmoney { width: 150px; text-align: right; padding-right: 10px; }
+  #formNote {
+    width: 100%; min-height: 84px; margin-top: 10px; padding: 10px 12px; border-radius: 12px; resize: vertical;
+    border: 1px solid rgba(128,128,128,0.3); background: var(--bg); color: var(--text); font: inherit; font-size: 16px;
+  }
+  .form-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; padding-bottom: env(safe-area-inset-bottom); }
+  /* Голосовое: «Я понял так» */
+  .voice-card { align-self: stretch; background: var(--bubble-bot); border-radius: 16px; padding: 10px 12px; }
+  .voice-card .lbl { font-size: 12px; color: var(--hint); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .voice-card textarea {
+    width: 100%; margin-top: 6px; min-height: 60px; padding: 8px 10px; border-radius: 10px; resize: vertical;
+    border: 1px solid rgba(128,128,128,0.3); background: var(--bg); color: var(--text); font: inherit; font-size: 16px;
+  }
+  .voice-card .row2 { display: flex; gap: 8px; margin-top: 8px; }
+  .voice-card .row2 .action-btn { flex: 1; padding: 10px; }
+  /* Сделки */
+  #view-deals { overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding: 12px; gap: 10px; }
+  #dealsList { display: flex; flex-direction: column; gap: 8px; }
+  .stage-head { display: flex; justify-content: space-between; margin: 8px 2px 0; font-size: 13px; color: var(--hint); font-weight: 600; }
+  .deal { padding: 10px 12px; border-radius: 14px; background: var(--bubble-bot); }
+  .deal-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .deal-brand { font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
+  .deal-days { font-size: 12px; color: var(--hint); white-space: nowrap; }
+  .deal-days.stale { color: #e53935; font-weight: 600; }
+  .deal-btns { display: flex; gap: 6px; margin-top: 8px; }
+  .deal-btns button { flex: 1; padding: 8px; border: none; border-radius: 10px; background: var(--bg); color: var(--text); font-size: 13px; font-weight: 600; cursor: pointer; }
+  .deal-btns button.next { background: var(--button); color: var(--button-text); }
+  .deal.closed { opacity: 0.65; }
 </style>
 </head>
 <body>
   <nav id="tabs">
     <button class="tab active" data-view="chat">💬 РОП</button>
     <button class="tab" data-view="tasks">📋 Задачи <span id="tasksBadge" class="badge" hidden></span></button>
+    <button class="tab" data-view="deals">🤝 Сделки <span id="dealsBadge" class="badge alert" hidden></span></button>
   </nav>
 
   <section id="view-chat" class="view active">
@@ -249,11 +299,25 @@
       <button id="micBtn" title="Удерживай, чтобы записать голосовое">🎤</button>
       <button id="sendBtn">➤</button>
     </div>
+    <div id="formPanel">
+      <div class="form-title">🌙 Итоги дня</div>
+      <div class="form-sub">Заполни цифры — писать текстом не нужно.</div>
+      <div class="form-card" id="formFields"></div>
+      <textarea id="formNote" placeholder="С кем из утреннего плана поговорил и чем закончилось? (по желанию)"></textarea>
+      <div class="form-actions">
+        <button class="action-btn" id="formSubmit">Отправить итоги</button>
+        <button class="action-btn secondary" id="formCancel">Назад в чат</button>
+      </div>
+    </div>
   </section>
 
   <section id="view-tasks" class="view">
     <div id="tasksSummary"></div>
     <div id="tasksList"></div>
+  </section>
+
+  <section id="view-deals" class="view">
+    <div id="dealsList"></div>
   </section>
 
 <script>
@@ -285,10 +349,26 @@ function addBubble(sender, text) {
   chatEl.scrollTop = chatEl.scrollHeight;
 }
 
-function renderActions(pendingAction, awaitingAnswer) {
+function actionButton(text, onclick, secondary) {
+  const btn = document.createElement("button");
+  btn.className = "action-btn" + (secondary ? " secondary" : "");
+  btn.textContent = text;
+  btn.onclick = onclick;
+  actionsEl.appendChild(btn);
+}
+
+function renderActions(pendingAction, awaitingAnswer, eveningForm) {
   actionsEl.innerHTML = "";
   if (awaitingAnswer) {
     inputbarEl.style.display = "flex";
+    // Итоги дня уже идут в чате — можно дозаполнить формой.
+    if (eveningForm) actionButton("📝 Заполнить цифры формой", openForm, true);
+    return;
+  }
+  if (pendingAction === "start_evening" && eveningForm) {
+    inputbarEl.style.display = "flex";
+    actionButton("📝 Итоги дня формой", openForm);
+    actionButton("🌙 Подвести итоги в чате", () => callStart(), true);
     return;
   }
   if (pendingAction === "start_standup") {
@@ -334,8 +414,101 @@ async function loadState() {
   }
   chatEl.innerHTML = "";
   data.messages.forEach((m) => addBubble(m.sender, m.text));
-  renderActions(data.pending_action, data.awaiting_answer);
+  formFields = data.form_fields || [];
+  renderActions(data.pending_action, data.awaiting_answer, data.evening_form);
 }
+
+// ---------- итоги дня формой ----------
+const viewChatEl = document.getElementById("view-chat");
+const formFieldsEl = document.getElementById("formFields");
+const formNoteEl = document.getElementById("formNote");
+const formSubmitBtn = document.getElementById("formSubmit");
+let formFields = [];
+
+const digitsOnly = (s) => String(s).replace(/\D/g, "");
+const groupDigits = (s) => { const d = digitsOnly(s); return d ? Number(d).toLocaleString("ru-RU") : ""; };
+
+function formRow(f) {
+  const row = document.createElement("div");
+  row.className = "frow";
+  const label = document.createElement("label");
+  label.textContent = f.label;
+  label.htmlFor = "f-" + f.field;
+  const input = document.createElement("input");
+  input.id = "f-" + f.field;
+  input.dataset.field = f.field;
+  input.type = "text";
+  input.inputMode = "numeric";
+  input.autocomplete = "off";
+  if (f.money) {
+    // Суммы в сумах — с пробелами по разрядам, чтобы не ошибиться в нулях.
+    input.className = "fmoney";
+    input.placeholder = "0 сум";
+    input.addEventListener("input", () => { input.value = groupDigits(input.value); });
+    row.append(label, input);
+    return row;
+  }
+  input.className = "fnum";
+  input.value = "0";
+  input.addEventListener("input", () => { input.value = digitsOnly(input.value); });
+  input.addEventListener("focus", () => input.select());
+  const step = (d) => () => {
+    input.value = String(Math.max(0, (Number(digitsOnly(input.value)) || 0) + d));
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+  };
+  const minus = document.createElement("button");
+  minus.className = "sbtn"; minus.type = "button"; minus.textContent = "−"; minus.onclick = step(-1);
+  minus.setAttribute("aria-label", "Меньше");
+  const plus = document.createElement("button");
+  plus.className = "sbtn"; plus.type = "button"; plus.textContent = "+"; plus.onclick = step(1);
+  plus.setAttribute("aria-label", "Больше");
+  const box = document.createElement("div");
+  box.className = "stepper";
+  box.append(minus, input, plus);
+  row.append(label, box);
+  return row;
+}
+
+function openForm() {
+  if (!formFieldsEl.childElementCount) formFields.forEach((f) => formFieldsEl.appendChild(formRow(f)));
+  viewChatEl.classList.add("form-open");
+  document.getElementById("formPanel").scrollTop = 0;
+}
+
+function closeForm() {
+  viewChatEl.classList.remove("form-open");
+  chatEl.scrollTop = chatEl.scrollHeight;
+}
+
+async function submitForm() {
+  if (formSubmitBtn.disabled) return;
+  const values = {};
+  formFieldsEl.querySelectorAll("input").forEach((i) => {
+    values[i.dataset.field] = Number(digitsOnly(i.value)) || 0;
+  });
+  formSubmitBtn.disabled = true;
+  formSubmitBtn.textContent = "Отправляю…";
+  try {
+    const data = await api("/api/evening_form", { values, note: formNoteEl.value });
+    if (data.error === "already_done") notify("Итоги дня за сегодня уже сданы.");
+    else if (data.error) { notify("Не удалось отправить. Попробуй ещё раз."); return; }
+    if (tg && tg.HapticFeedback && !data.error) tg.HapticFeedback.notificationOccurred("success");
+    formFieldsEl.innerHTML = "";
+    formNoteEl.value = "";
+    closeForm();
+    await loadState();
+    loadTasks();
+    loadDeals();
+  } catch (e) {
+    notify("Не удалось отправить. Проверь интернет и попробуй ещё раз.");
+  } finally {
+    formSubmitBtn.disabled = false;
+    formSubmitBtn.textContent = "Отправить итоги";
+  }
+}
+
+formSubmitBtn.onclick = submitForm;
+document.getElementById("formCancel").onclick = closeForm;
 
 async function callStart() {
   const data = await api("/api/start");
@@ -346,8 +519,12 @@ async function callStart() {
 async function sendMessage() {
   const text = textInput.value.trim();
   if (!text || sendBtn.disabled) return;
-  addBubble("employee", text);
   textInput.value = "";
+  await sendText(text);
+}
+
+async function sendText(text) {
+  addBubble("employee", text);
   setBusy(true);
   const typing = addPlaceholder("печатает…");
   try {
@@ -539,6 +716,7 @@ async function sendVoice(blob) {
   try {
     const form = new FormData();
     form.append("initData", initData);
+    form.append("confirm", "1");   // сначала только расшифровка — сотрудник проверит её
     form.append("audio", blob, "voice");
     const resp = await fetch("/api/voice", { method: "POST", body: form });
     const data = await resp.json();
@@ -546,14 +724,62 @@ async function sendVoice(blob) {
       notify("Не смог разобрать голосовое. Попробуй ещё раз или напиши текстом.");
     } else if (data.error) {
       notify("Не удалось отправить голосовое. Попробуй ещё раз.");
+    } else {
+      placeholder.remove();
+      setBusy(false);
+      showVoiceConfirm(data.text);
+      return;
     }
-    await loadState();
   } catch (e) {
     notify("Не удалось отправить голосовое. Проверь интернет и попробуй ещё раз.");
-  } finally {
-    placeholder.remove();
-    setBusy(false);
   }
+  placeholder.remove();
+  setBusy(false);
+}
+
+// «Я понял так»: расшифровку можно поправить прямо в карточке, прежде чем отправить —
+// иначе AI запишет в отчёт неверно услышанные цифры и имена клиентов.
+function showVoiceConfirm(text) {
+  const card = document.createElement("div");
+  card.className = "voice-card";
+  const lbl = document.createElement("div");
+  lbl.className = "lbl";
+  lbl.textContent = "🎤 Я понял так";
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.readOnly = true;
+  const row = document.createElement("div");
+  row.className = "row2";
+  const ok = document.createElement("button");
+  ok.className = "action-btn";
+  ok.textContent = "✅ Верно";
+  const fix = document.createElement("button");
+  fix.className = "action-btn secondary";
+  fix.textContent = "✏️ Исправить";
+  const drop = document.createElement("button");
+  drop.className = "action-btn secondary";
+  drop.textContent = "✖️";
+  drop.title = "Не отправлять";
+  drop.style.flex = "0 0 48px";
+  row.append(ok, fix, drop);
+  card.append(lbl, area, row);
+  chatEl.appendChild(card);
+  chatEl.scrollTop = chatEl.scrollHeight;
+
+  fix.onclick = () => {
+    area.readOnly = false;
+    area.focus();
+    area.setSelectionRange(area.value.length, area.value.length);
+    fix.hidden = true;
+    ok.textContent = "➤ Отправить";
+  };
+  drop.onclick = () => card.remove();
+  ok.onclick = async () => {
+    const value = area.value.trim();
+    if (!value || sendBtn.disabled) return;
+    card.remove();
+    await sendText(value);
+  };
 }
 
 sendBtn.onclick = sendMessage;
@@ -570,6 +796,7 @@ function showView(name) {
     v.classList.toggle("active", v.id === "view-" + name)
   );
   if (name === "tasks") loadTasks();
+  if (name === "deals") loadDeals();
 }
 
 tabButtons.forEach((b) => (b.onclick = () => showView(b.dataset.view)));
@@ -760,13 +987,94 @@ async function acceptTask(id, btn) {
   await loadTasks();
 }
 
+// ---------- сделки (мини-CRM) ----------
+// Доску собирает AI из сообщений («с Evos договорились на встречу»), сотрудник двигает
+// сделки кнопками. Без движения STALE_DAYS+ дней — сделка подсвечена как зависшая.
+const dealsListEl = document.getElementById("dealsList");
+const dealsBadge = document.getElementById("dealsBadge");
+
+function dealCard(d, stages, lost) {
+  const card = document.createElement("div");
+  const open = d.stage !== "paid" && d.stage !== lost.key;
+  card.className = "deal" + (open ? "" : " closed");
+  const top = document.createElement("div");
+  top.className = "deal-top";
+  const brand = document.createElement("span");
+  brand.className = "deal-brand";
+  brand.textContent = d.brand;
+  const days = document.createElement("span");
+  days.className = "deal-days" + (d.stale ? " stale" : "");
+  days.textContent = d.days === 0 ? "сегодня" : d.stale ? `${d.days} дн. без движения` : `${d.days} дн. на этапе`;
+  top.append(brand, days);
+  card.appendChild(top);
+
+  const btns = document.createElement("div");
+  btns.className = "deal-btns";
+  const idx = stages.findIndex((s) => s.key === d.stage);
+  const add = (text, stage, cls) => {
+    const b = document.createElement("button");
+    b.textContent = text;
+    if (cls) b.className = cls;
+    b.onclick = () => moveDeal(d.id, stage, b);
+    btns.appendChild(b);
+  };
+  if (open && idx >= 0 && idx < stages.length - 1) {
+    const next = stages[idx + 1];
+    add(`→ ${next.icon} ${next.label}`, next.key, "next");
+  }
+  if (open) add("✖️ Отказ", lost.key);
+  else add("↺ Вернуть в работу", stages[0].key);
+  card.appendChild(btns);
+  return card;
+}
+
+async function loadDeals() {
+  const data = await api("/api/deals");
+  if (data.error) return;
+  const stale = data.deals.filter((d) => d.stale).length;
+  dealsBadge.hidden = stale === 0;
+  dealsBadge.textContent = stale;
+
+  dealsListEl.innerHTML = "";
+  if (!data.deals.length) {
+    const empty = document.createElement("div");
+    empty.id = "status";
+    empty.textContent = "Сделок пока нет. Называй клиентов в стендапе и итогах дня — я сам соберу их сюда.";
+    dealsListEl.appendChild(empty);
+    return;
+  }
+  const columns = data.stages.concat([Object.assign({ icon: "✖️" }, data.lost)]);
+  columns.forEach((s) => {
+    const list = data.deals.filter((d) => d.stage === s.key);
+    if (!list.length) return;
+    const head = document.createElement("div");
+    head.className = "stage-head";
+    const name = document.createElement("span");
+    name.textContent = `${s.icon} ${s.label}`;
+    const count = document.createElement("span");
+    count.textContent = list.length;
+    head.append(name, count);
+    dealsListEl.appendChild(head);
+    list.forEach((d) => dealsListEl.appendChild(dealCard(d, data.stages, data.lost)));
+  });
+}
+
+async function moveDeal(id, stage, btn) {
+  btn.disabled = true;
+  const data = await api("/api/deals/move", { deal_id: id, stage });
+  if (data.error) { notify("Не удалось переместить сделку."); btn.disabled = false; return; }
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+  loadDeals();
+}
+
 // Обновляем задачи, когда приложение снова на экране, и раз в минуту — чтобы
 // новая задача от руководителя сразу появлялась в счётчике.
-document.addEventListener("visibilitychange", () => { if (!document.hidden) loadTasks(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { loadTasks(); loadDeals(); } });
 setInterval(loadTasks, 60000);
 
 loadState();
 loadTasks();
+loadDeals();
 // ?tab=tasks — открыть сразу раздел задач (кнопка в уведомлении о новой задаче).
 // Не #tasks: хеш Telegram занимает своими параметрами.
 if (new URLSearchParams(location.search).get("tab") === "tasks") showView("tasks");

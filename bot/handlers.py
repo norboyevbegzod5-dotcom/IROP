@@ -6,7 +6,7 @@ from telegram.constants import ChatAction
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import ContextTypes
 
-from bot import admin_context, ai, checkins, db, digest, goals, knowledge, styles, texts
+from bot import admin_context, ai, checkins, db, deals, digest, goals, knowledge, styles, texts
 from bot.config import (
     ADMIN_CHAT_ID,
     AUTO_TASK_DEFAULT_DEADLINE,
@@ -710,6 +710,29 @@ async def _answer_employee(bot, employee, text: str) -> str:
     return reply
 
 
+async def evening_form(bot, employee, values: dict, note: str):
+    """Итоги дня из формы мини-аппа. -> сообщения бота по порядку или None, если итоги
+    уже сданы. Комментарий («с кем говорил») разбирается как обычное сообщение: из него
+    ставятся задачи и обновляются сделки."""
+    result = await checkins.submit_form(employee, values, note)
+    if result is None:
+        return None
+    employee_text, reply, report = result
+    today_str = date.today().isoformat()
+    db.log_message(employee["key"], today_str, "employee", employee_text)
+
+    lines = [goals.short_line(p) for p in await goals.check_achieved(bot, employee)]
+    if lines:
+        reply = reply + "\n\n" + "\n".join(lines)
+    db.log_message(employee["key"], today_str, "bot", reply)
+    await _notify_admin(bot, report)
+
+    notices = await process_tasks(bot, employee, note) if (note or "").strip() else []
+    for notice in notices:
+        db.log_message(employee["key"], today_str, "bot", notice)
+    return [reply] + notices
+
+
 async def _notify_admin(bot, text: str, keyboard=None):
     if ADMIN_CHAT_ID is None:
         return
@@ -795,7 +818,19 @@ async def process_tasks(bot, employee, text: str) -> list:
                 [[InlineKeyboardButton("↩️ Вернуть в работу", callback_data=f"reopen:{task['id']}")]]
             ),
         )
+
+    changes = deals.apply_mentions(employee["key"], result["deals"])
+    if changes:
+        notices.append(deals.change_notice(changes))
+        await notify_deal_paid(bot, employee, [(b, s) for _, b, s, _ in changes])
     return notices
+
+
+async def notify_deal_paid(bot, employee, moved: list):
+    """Руководителю — о каждой сделке, дошедшей до оплаты. moved: [(brand, stage)]."""
+    for brand, stage in moved:
+        if stage == "paid":
+            await _notify_admin(bot, texts.deal_paid_admin(employee["full_name"], brand))
 
 
 async def employee_message(bot, employee, text: str) -> list:

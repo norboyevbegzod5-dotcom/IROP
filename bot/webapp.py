@@ -6,7 +6,7 @@ from aiohttp import web
 
 from telegram.error import BadRequest, Forbidden
 
-from bot import admin, ai, checkins, db, goals, handlers, texts
+from bot import admin, ai, checkins, db, deals, goals, handlers, texts
 from bot.config import ADMIN_CHAT_ID, AUTO_TASK_OVERDUE_GRACE_HOURS
 from bot.telegram_auth import get_user, validate_init_data
 
@@ -33,7 +33,10 @@ def _authenticate(payload: dict):
 async def handle_index(request: web.Request):
     path = os.path.join(_STATIC_DIR, "index.html")
     with open(path, "r", encoding="utf-8") as f:
-        return web.Response(text=f.read(), content_type="text/html")
+        # Без no-store Telegram (особенно на Android) показывает старую версию из кэша
+        # и после деплоя сотрудники не видят обновлений.
+        return web.Response(text=f.read(), content_type="text/html",
+                            headers={"Cache-Control": "no-store"})
 
 
 async def handle_state(request: web.Request):
@@ -54,14 +57,41 @@ async def handle_state(request: web.Request):
         elif checkins.EVENING not in completed:
             pending_action = "start_evening"
 
+    # Итоги дня можно сдать формой вместо переписки — и до начала, и посреди диалога.
+    evening_form = checkins.EVENING not in completed and (
+        pending_action == "start_evening"
+        or (active is not None and active["kind"] == checkins.EVENING)
+    )
     return web.json_response(
         {
             "employee_name": employee["full_name"],
             "messages": [{"sender": m["sender"], "text": m["text"]} for m in messages],
             "awaiting_answer": active is not None,
             "pending_action": pending_action,
+            "evening_form": evening_form,
+            "form_fields": [
+                {"field": f, "label": label, "money": money}
+                for f, label, money in checkins.FORM_FIELDS
+            ],
         }
     )
+
+
+async def handle_evening_form(request: web.Request):
+    payload = await request.json()
+    employee, err = _authenticate(payload)
+    if err:
+        return err
+
+    values = payload.get("values")
+    if not isinstance(values, dict):
+        return web.json_response({"error": "bad_values"}, status=400)
+    replies = await handlers.evening_form(
+        request.app["bot"], employee, values, str(payload.get("note") or "")
+    )
+    if replies is None:
+        return web.json_response({"error": "already_done"}, status=409)
+    return web.json_response({"ok": True, "replies": replies})
 
 
 async def handle_start(request: web.Request):
@@ -219,8 +249,49 @@ async def handle_voice(request: web.Request):
     if text is None:
         return web.json_response({"error": "not_recognized"}, status=422)
 
+    # confirm=1 — только расшифровка: мини-апп показывает «Я понял так» с кнопками
+    # «Верно / Исправить» и отправляет текст сам, когда сотрудник подтвердит.
+    if form.get("confirm") == "1":
+        return web.json_response({"ok": True, "text": text})
+
     replies = await handlers.employee_message(request.app["bot"], employee, text)
     return web.json_response({"ok": True, "text": text, "replies": replies})
+
+
+def _deals_json(employee_key: str) -> dict:
+    return {
+        "deals": deals.board(employee_key),
+        "stages": [{"key": s, "label": deals.LABELS[s], "icon": deals.ICONS[s]} for s in deals.STAGES],
+        "lost": {"key": deals.LOST, "label": deals.LABELS[deals.LOST]},
+        "stale_days": deals.STALE_DAYS,
+    }
+
+
+async def handle_deals(request: web.Request):
+    payload = await request.json()
+    employee, err = _authenticate(payload)
+    if err:
+        return err
+    return web.json_response(_deals_json(employee["key"]))
+
+
+async def handle_deal_move(request: web.Request):
+    payload = await request.json()
+    employee, err = _authenticate(payload)
+    if err:
+        return err
+    try:
+        deal_id = int(payload.get("deal_id"))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "bad_deal_id"}, status=400)
+
+    before = db.get_deal(deal_id)
+    deal = deals.move(deal_id, employee["key"], str(payload.get("stage") or ""))
+    if deal is None:
+        return web.json_response({"error": "not_movable"}, status=409)
+    if before["stage"] != deal["stage"]:
+        await handlers.notify_deal_paid(request.app["bot"], employee, [(deal["brand"], deal["stage"])])
+    return web.json_response(_deals_json(employee["key"]))
 
 
 def build_app(bot) -> web.Application:
@@ -234,6 +305,9 @@ def build_app(bot) -> web.Application:
     app.router.add_post("/api/voice", handle_voice)
     app.router.add_post("/api/tasks", handle_tasks)
     app.router.add_post("/api/tasks/accept", handle_task_accept)
+    app.router.add_post("/api/evening_form", handle_evening_form)
+    app.router.add_post("/api/deals", handle_deals)
+    app.router.add_post("/api/deals/move", handle_deal_move)
     admin.register(app)
     return app
 

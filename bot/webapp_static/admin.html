@@ -114,6 +114,28 @@
   .goal:last-child { border-bottom: 0; padding-bottom: 0; }
   .goal-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
   .goal-sub { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--hint); margin-top: 4px; }
+  /* Рейтинг и воронка */
+  .two { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); align-items: start; }
+  .two h2 { margin-top: 24px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+  .chip {
+    border: 1px solid var(--line); background: var(--bg); color: var(--text); border-radius: 999px;
+    padding: 5px 11px; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .rank-row { display: grid; grid-template-columns: 22px 1fr auto; gap: 2px 10px; align-items: center; padding: 9px 0; }
+  .rank-row + .rank-row { border-top: 1px solid var(--line); }
+  .rank-row .bar { grid-column: 2 / 4; margin-top: 2px; }
+  .rank-n { color: var(--hint); font-variant-numeric: tabular-nums; font-weight: 600; }
+  .rank-row b { font-variant-numeric: tabular-nums; }
+  .funnel-step + .funnel-step { margin-top: 12px; }
+  .conv { color: var(--hint); font-weight: 400; }
+  /* Сделки */
+  .stages { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin-bottom: 12px; }
+  .stages div { background: var(--bg); border-radius: 10px; padding: 8px 10px; }
+  .stages span { display: block; font-size: 12px; color: var(--hint); }
+  .stages b { font-size: 18px; font-variant-numeric: tabular-nums; }
+  .deal-row { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 9px 0; border-top: 1px solid var(--line); font-size: 14px; }
   #error { display: none; background: #fde8e8; color: #9b1c1c; padding: 10px 12px; border-radius: 10px; margin-bottom: 12px; }
 </style>
 </head>
@@ -136,6 +158,28 @@
 
   <h2>Команда</h2>
   <div class="grid kpis" id="kpis"></div>
+
+  <div class="grid two">
+    <div>
+      <h2>Рейтинг</h2>
+      <div class="card">
+        <div class="chips" id="rankMetrics"></div>
+        <div id="rank"></div>
+      </div>
+    </div>
+    <div>
+      <h2>Воронка команды</h2>
+      <div class="card" id="funnel"></div>
+    </div>
+  </div>
+
+  <div id="dealsBlock" hidden>
+    <h2>Сделки</h2>
+    <div class="card">
+      <div class="stages" id="dealStages"></div>
+      <div id="deals"></div>
+    </div>
+  </div>
 
   <div id="goalsBlock" hidden>
     <h2>Цели</h2>
@@ -377,6 +421,113 @@ function renderToday() {
   });
 }
 
+// Рейтинг сотрудников по выбранной метрике за период.
+const RANK_METRICS = [
+  ["calls", "Звонки"], ["meetings_new", "Встречи назначены"], ["meetings_held", "Встречи проведены"],
+  ["kp_count", "КП"], ["contracts_count", "Договоры"], ["payments_sum", "Поступления"],
+  ["new_connections", "Подключения"],
+];
+let rankMetric = "calls";
+
+function renderRank() {
+  const chips = $("rankMetrics");
+  chips.innerHTML = "";
+  RANK_METRICS.forEach(([key, label]) => {
+    const b = el("button", "chip" + (key === rankMetric ? " active" : ""), label);
+    b.onclick = () => { rankMetric = key; renderRank(); };
+    chips.appendChild(b);
+  });
+  const isMoney = rankMetric === "payments_sum";
+  const rows = data.employees
+    .map((e) => [e, e.fact[rankMetric] || 0])
+    .sort((a, b) => b[1] - a[1]);
+  const max = Math.max(1, ...rows.map((r) => r[1]));
+  const wrap = $("rank");
+  wrap.innerHTML = "";
+  rows.forEach(([emp, value], i) => {
+    const row = el("div", "rank-row");
+    const name = el("span", "", emp.name + " ");
+    const badge = streakBadge(emp);
+    if (badge) name.appendChild(badge);
+    const b = el("div", "bar");
+    const fill = el("i");
+    fill.style.width = `${(value / max) * 100}%`;
+    b.appendChild(fill);
+    row.append(el("span", "rank-n", String(i + 1)), name, el("b", "", isMoney ? money(value) : fmt(value)), b);
+    wrap.appendChild(row);
+  });
+}
+
+// Воронка: звонки → проведённые встречи → КП → договоры, с конверсией. Назначенные
+// встречи — отдельной строкой: их проводят в другие дни, и за период «проведено»
+// бывает больше «назначено».
+function renderFunnel() {
+  const e = data.employees;
+  const steps = [
+    ["Звонки", sum(e, (x) => x.fact.calls)],
+    ["Встречи проведены", sum(e, (x) => x.fact.meetings_held)],
+    ["КП отправлено", sum(e, (x) => x.fact.kp_count)],
+    ["Договоры", sum(e, (x) => x.fact.contracts_count)],
+  ];
+  const wrap = $("funnel");
+  wrap.innerHTML = "";
+  if (!steps[0][1]) {
+    wrap.appendChild(el("div", "empty", "За период нет цифр из итогов дня."));
+    return;
+  }
+  steps.forEach(([label, value], i) => {
+    const step = el("div", "funnel-step");
+    const head = el("div", "row-head");
+    head.appendChild(el("span", "", label));
+    const v = el("b", "", fmt(value));
+    if (i > 0) {
+      const prev = steps[i - 1][1];
+      v.appendChild(el("span", "conv", prev ? ` · ${Math.round((value / prev) * 100)}% от пред.` : " · —"));
+    }
+    head.appendChild(v);
+    const b = el("div", "bar" + (i === steps.length - 1 ? " good" : ""));
+    const fill = el("i");
+    fill.style.width = `${Math.min(100, (value / steps[0][1]) * 100)}%`;
+    b.appendChild(fill);
+    step.append(head, b);
+    wrap.appendChild(step);
+  });
+  wrap.appendChild(el("div", "reports-line",
+    `Новых встреч назначено: ${fmt(sum(e, (x) => x.fact.meetings_new))} · ` +
+    `поступило: ${money(sum(e, (x) => x.fact.payments_sum))}`));
+}
+
+function renderDeals() {
+  $("dealsBlock").hidden = !data.deals.length;
+  if (!data.deals.length) return;
+  const stages = $("dealStages");
+  stages.innerHTML = "";
+  data.deal_stages.forEach((s) => {
+    const d = el("div");
+    d.appendChild(el("span", "", `${s.icon} ${s.label}`));
+    d.appendChild(el("b", "", String(data.deals.filter((x) => x.stage === s.key).length)));
+    stages.appendChild(d);
+  });
+  // Сначала зависшие (дольше всех без движения), потом остальные открытые, закрытые в конце.
+  const open = (d) => d.stage !== "paid" && d.stage !== "lost";
+  const order = (d) => (d.stale ? 0 : open(d) ? 1 : 2);
+  const list = [...data.deals].sort((a, b) => order(a) - order(b) || b.days - a.days);
+  const wrap = $("deals");
+  wrap.innerHTML = "";
+  list.forEach((d) => {
+    const row = el("div", "deal-row");
+    const left = el("span");
+    left.appendChild(el("b", "", d.brand));
+    left.appendChild(document.createTextNode(` · ${d.employee_name}`));
+    const right = el("span", "pills");
+    right.appendChild(el("span", "pill" + (d.stage === "paid" ? " ok" : d.stage === "lost" ? " bad" : ""), d.stage_label));
+    right.appendChild(el("span", d.stale ? "pill bad" : "pill",
+      d.stale ? `${d.days} дн. без движения` : d.days ? `${d.days} дн. на этапе` : "сегодня"));
+    row.append(left, right);
+    wrap.appendChild(row);
+  });
+}
+
 const GOAL_PILLS = {
   achieved: ["выполнено", "ok"], on_track: ["успевает", "ok"], at_risk: ["на грани", "mid"],
   behind: ["не успевает", "bad"], new: ["только начали", ""],
@@ -451,6 +602,9 @@ async function load() {
   renderPeriods();
   renderToday();
   renderKpis();
+  renderRank();
+  renderFunnel();
+  renderDeals();
   renderGoals();
   renderPlans();
   renderPeople();

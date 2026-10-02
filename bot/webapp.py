@@ -1,13 +1,15 @@
 import asyncio
+import hmac
 import os
 from datetime import date, datetime, timedelta
 
 from aiohttp import web
 
+from telegram import Update
 from telegram.error import BadRequest, Forbidden
 
 from bot import admin, ai, checkins, db, deals, goals, handlers, texts
-from bot.config import ADMIN_CHAT_ID, AUTO_TASK_OVERDUE_GRACE_HOURS
+from bot.config import ADMIN_CHAT_ID, AUTO_TASK_OVERDUE_GRACE_HOURS, WEBHOOK_SECRET
 from bot.telegram_auth import get_user, validate_init_data
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webapp_static")
@@ -294,10 +296,30 @@ async def handle_deal_move(request: web.Request):
     return web.json_response(_deals_json(employee["key"]))
 
 
-def build_app(bot) -> web.Application:
+WEBHOOK_PATH = f"/telegram/{WEBHOOK_SECRET}"
+
+
+async def handle_telegram(request: web.Request):
+    """Вебхук Telegram: обновление кладём в очередь приложения, дальше его обрабатывают
+    те же хендлеры, что и при polling. Отвечаем сразу — иначе Telegram пришлёт повторно."""
+    token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if not hmac.compare_digest(token, WEBHOOK_SECRET):
+        raise web.HTTPForbidden()
+    try:
+        data = await request.json()
+    except ValueError:
+        raise web.HTTPBadRequest()
+    await request.app["update_queue"].put(Update.de_json(data, request.app["bot"]))
+    return web.Response()
+
+
+def build_app(bot, update_queue=None) -> web.Application:
     # Лимит тела запроса поднят ради голосовых (по умолчанию в aiohttp — 1 МБ).
     app = web.Application(client_max_size=25 * 1024 * 1024)
     app["bot"] = bot
+    if update_queue is not None:
+        app["update_queue"] = update_queue
+        app.router.add_post(WEBHOOK_PATH, handle_telegram)
     app.router.add_get("/", handle_index)
     app.router.add_post("/api/state", handle_state)
     app.router.add_post("/api/start", handle_start)
@@ -312,8 +334,8 @@ def build_app(bot) -> web.Application:
     return app
 
 
-async def start_web_server(bot, port: int) -> web.AppRunner:
-    app = build_app(bot)
+async def start_web_server(bot, port: int, update_queue=None) -> web.AppRunner:
+    app = build_app(bot, update_queue)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)

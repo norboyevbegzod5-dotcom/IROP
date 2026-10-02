@@ -4,7 +4,7 @@
 
 from datetime import date, datetime, timedelta
 
-from bot import checkins, db, deals, goals, stats
+from bot import checkins, crm, db, deals, goals, stats
 from bot.config import EMPLOYEES
 
 METRICS_DAYS = 31        # цифры по дням — за месяц
@@ -33,7 +33,31 @@ def _cut(text: str) -> str:
     return text if len(text) <= MESSAGE_CHARS else text[: MESSAGE_CHARS - 1] + "…"
 
 
-def build_snapshot() -> str:
+async def _crm_section(today) -> str:
+    """Факты из CRM (GFSupport): сегодня, неделя и воронка — рядом с самоотчётом."""
+    if not crm.enabled():
+        return ""
+    day = await crm.facts_for_day(today.isoformat())
+    week = await crm.snapshot(7)
+    lines = ["ДАННЫЕ CRM GFSupport (объективные: звонки с АТС, КП, сделки, оплаты; звонок "
+             "считается по ответственному за обращение, поэтому это «не меньше, чем»; "
+             "новых подключений CRM не считает):"]
+    for e in EMPLOYEES:
+        snap = week.get(e.key)
+        lines.append(f"- {e.full_name}, сегодня {crm.line(day.get(e.key))}")
+        if snap:
+            total = snap.get("total") or {}
+            lines.append(f"  за 7 дней: звонков {total.get('calls', 0)}, КП {total.get('kp_count', 0)}, "
+                         f"договоров {total.get('contracts_count', 0)}, поступило "
+                         f"{_num(total.get('payments_sum'))} сум")
+            for extra in (crm.pipeline_line(snap), crm.deals_line(snap), crm.lost_line(snap),
+                          crm.called_line(snap)):
+                if extra:
+                    lines.append(f"  {extra}")
+    return "\n".join(lines)
+
+
+async def build_snapshot() -> str:
     now = datetime.now()
     today = now.date()
     today_str = today.isoformat()
@@ -61,6 +85,10 @@ def build_snapshot() -> str:
     for e in EMPLOYEES:
         lines.append(f"- {e.full_name}: {_metrics_line(month_facts.get(e.key, {}))}")
     parts.append("\n".join(lines))
+
+    crm_section = await _crm_section(today)
+    if crm_section:
+        parts.append(crm_section)
 
     # Цифры по дням
     start = today - timedelta(days=METRICS_DAYS - 1)

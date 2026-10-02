@@ -4,7 +4,7 @@
 import asyncio
 from datetime import date, timedelta
 
-from bot import ai, checkins, db, deals, goals, stats
+from bot import ai, checkins, crm, db, deals, goals, stats
 from bot.config import EMPLOYEES
 
 _WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
@@ -154,7 +154,9 @@ def numbers_block(facts: dict, today: date) -> str:
             lines.append(f"{p['name']}: итоги сданы, цифр AI не нашёл")
         else:
             lines.append(f"{p['name']}: ❌ нет итогов дня")
-    if reported:
+        if p.get("crm_today"):
+            lines.append(f"   {crm_line(p['crm_today'])}")
+    if reported or any(p.get("crm_today") for p in people):
         lines.append(LEGEND)
     return "\n".join(lines)
 
@@ -174,11 +176,33 @@ def goals_block(facts: dict) -> str:
     return "\n".join(["🎯 Цели:", *lines]) if lines else ""
 
 
+async def _add_crm(facts: dict, today: date):
+    """Факты CRM рядом с самоотчётом: для строки сводки и для выводов AI."""
+    if not crm.enabled():
+        return
+    day = await crm.facts_for_day(today.isoformat())
+    week = await crm.snapshot(7)
+    for p in facts["employees"]:
+        fact, snap = day.get(p["key"]), week.get(p["key"])
+        p["crm_today"] = {f: fact.get(f) for f in (*crm.FACT_FIELDS, "calls_answered")} if fact else None
+        if snap:
+            p["crm_pipeline"] = crm.pipeline_line(snap)
+            p["crm_stuck_deals"] = crm.deals_line(snap)
+            p["crm_called_today"] = crm.called_line(snap)
+
+
+def crm_line(fact: dict) -> str:
+    return (f"по CRM: 📞 {fact.get('calls') or 0} (разговор {fact.get('calls_answered') or 0}) · "
+            f"📅 {fact.get('meetings_new') or 0} · 📄 {fact.get('kp_count') or 0} · "
+            f"✍️ {fact.get('contracts_count') or 0} · 💰 {short_money(fact.get('payments_sum') or 0)}")
+
+
 async def build(today: date, tasks_block: str = "") -> str:
     facts = collect(today)
+    await _add_crm(facts, today)
     parts = [numbers_block(facts, today)]
 
-    if any(p["standup_report"] or p["evening_report"] for p in facts["employees"]):
+    if any(p["standup_report"] or p["evening_report"] or p.get("crm_today") for p in facts["employees"]):
         insights = await asyncio.to_thread(ai.daily_insights, facts)
         if insights:
             parts.append(insights)

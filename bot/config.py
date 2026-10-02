@@ -64,6 +64,11 @@ TELEGRAM_MODE = os.getenv("TELEGRAM_MODE") or ("webhook" if os.getenv("RENDER") 
 # чужие запросы на этот адрес не выдавались за сообщения сотрудников.
 WEBHOOK_SECRET = hashlib.sha256(f"{BOT_TOKEN}:telegram-webhook".encode()).hexdigest()[:32]
 
+# GFSupport (CRM отдела): объективные цифры по менеджерам — звонки с АТС, КП, сделки,
+# оплаты, воронка. Только чтение. Без ключа интеграция выключена, бот работает как раньше.
+CRM_FACTS_URL = os.getenv("CRM_FACTS_URL", "https://www.gfsupport.uz/api/support/public/agent-facts")
+CRM_FACTS_KEY = os.getenv("CRM_FACTS_KEY", "")
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # DATA_DIR указывает на постоянный диск (Render Persistent Disk и т.п.),
 # чтобы SQLite не терялась при передеплое. Локально — обычная папка data/.
